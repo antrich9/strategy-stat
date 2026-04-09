@@ -1,0 +1,575 @@
+Let me analyze the Pine Script to identify the entry logic.
+
+Key components:
+1. Previous day data using `request.security` for `prevHigh`, `prevLow`, `prevClose`, `dayOpen`
+2. BIAS logic: `biasUp` and `biasDown` based on comparison of `dayOpen` vs `prevClose` and midpoint of `prevHigh` and `prevLow`
+3. FVG (Fair Value Gap) detection: `bullishFVG1` and `bearishFVG1`
+4. State management with `ig_active`, `ig_direction`, validation logic
+5. Entry conditions: `system_entry_long = validated and ig_direction == -1` and `system_entry_short = validated and ig_direction == 1`
+6. Actual entries: `strategy.entry("Long", ...)` when `system_entry_long and bias == "Bullish"` and `strategy.entry("Short", ...)` when `system_entry_short and bias == "Bearish"`
+
+Since this is backtesting translation, I need to handle:
+1. Previous day data - this requires computing daily data from the intraday data. I need to compute daily high, low, close, open for each bar.
+2. BIAS calculation
+3. FVG detection
+4. The state machine for `ig_active`, `ig_direction`, validation
+
+Let me write the Python code:
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    
+    # Convert timestamp to datetime for grouping by day
+    df = df.copy()
+    df['datetime'] = pd.to_datetime(df['time'], unit='s', utc=True)
+    df['date'] = df['datetime'].dt.date
+    
+    # Calculate previous day OHLC using shift to access the completed day's values
+    daily_agg = df.groupby('date').agg({
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last',
+        'time': 'min'
+    }).reset_index()
+    
+    daily_agg['prevHigh'] = daily_agg['high'].shift(1)
+    daily_agg['prevLow'] = daily_agg['low'].shift(1)
+    daily_agg['prevClose'] = daily_agg['close'].shift(1)
+    daily_agg['dayOpen'] = daily_agg['open']
+    
+    # Merge previous day data back to intraday df
+    df = df.merge(daily_agg[['date', 'prevHigh', 'prevLow', 'prevClose', 'dayOpen']], on='date', how='left')
+    
+    # Calculate BIAS
+    df['biasMidpoint'] = (df['prevHigh'] + df['prevLow']) / 2
+    df['biasUp'] = df['dayOpen'] > df['prevClose'] & df['dayOpen'] > df['biasMidpoint']
+    df['biasDown'] = df['dayOpen'] < df['prevClose'] & df['dayOpen'] < df['biasMidpoint']
+    df['bias'] = np.where(df['biasUp'], 'Bullish', np.where(df['biasDown'], 'Bearish', 'Neutral'))
+    
+    # FVG detection
+    df['bullishFVG1'] = (df['high'].shift(2) < df['low']) & (df['high'].shift(2) != df['high'].shift(2))
+    df['bearishFVG1'] = (df['low'].shift(2) > df['high']) & (df['low'].shift(2) != df['low'].shift(2))
+    
+    # Initialize state variables
+    df['ig_active'] = False
+    df['ig_direction'] = 0
+    df['validated'] = False
+    
+    # State machine logic
+    for i in range(2, len(df)):
+        if df.loc[i, 'bullishFVG1'] and not df.loc[i-1, 'ig_active']:
+            df.loc[i, 'ig_active'] = True
+            df.loc[i, 'ig_direction'] = 1
+        elif df.loc[i, 'bearishFVG1'] and not df.loc[i-1, 'ig_active']:
+            df.loc[i, 'ig_active'] = True
+            df.loc[i, 'ig_direction'] = -1
+        elif df.loc[i, 'validated']:
+            df.loc[i, 'ig_active'] = False
+    
+    # Entry conditions
+    df['system_entry_long'] = df['validated'] & (df['ig_direction'] == -1)
+    df['system_entry_short'] = df['validated'] & (df['ig_direction'] == 1)
+    
+    # Generate entry signals
+    df['entry_long'] = df['system_entry_long'] & (df['bias'] == 'Bullish')
+    df['entry_short'] = df['system_entry_short'] & (df['bias'] == 'Bearish')
+    
+    # Create entry signals list
+    entries = []
+    for i in range(len(df)):
+        if df.loc[i, 'entry_long']:
+            entries.append({
+                'trade_num': len(entries) + 1,
+                'direction': 'long',
+                'entry_ts': int(df.loc[i, 'time']),
+                'entry_time': datetime.fromtimestamp(df.loc[i, 'time'], tz=timezone.utc).isoformat(),
+                'entry_price': df.loc[i, 'close'],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price': 0.0,
+                'raw_price_a': df.loc[i, 'close'],
+                'raw_price_b': df.loc[i, 'close']
+            })
+        if df.loc[i, 'entry_short']:
+            entries.append({
+                'trade_num': len(entries) + 1,
+                'direction': 'short',
+                'entry_ts': int(df.loc[i, 'time']),
+                'entry_time': datetime.fromtimestamp(df.loc[i, 'time'], tz=timezone.utc).isoformat(),
+                'entry_price': df.loc[i, 'close'],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price': 0.0,
+                'raw_price_a': df.loc[i, 'close'],
+                'raw_price_b': df.loc[i, 'close']
+            })
+    
+    return entries
+
+I'm setting up state variables to track active positions and validation status, then iterating through the dataframe to identify FVG patterns and update the state machine accordingly. From there, I define entry conditions combining validated signals with directional bias, creating separate long and short entry lists with timestamps, prices, and metadata. For bullish FVG, I set the direction to 1 (long bias), and for bearish FVG, direction becomes -1 (short bias). The validation window extends 4 bars forward from the FVG detection. When validating, a long signal requires price to stay below the FVG's high, while a short signal needs price to remain above the FVG's low. The bias condition then filters these validated signals—bullish bias allows long entries, and bearish bias allows short entries.
+
+In Pine Script's bar-by-bar execution, state variables like `ig_active`, `ig_direction`, and `ig_validation_end` persist across iterations, updating as each new bar is processed. This means the logic resets or continues based on the previous bar's state. For the Python conversion, I need to account for this sequential state management as I iterate through the dataframe. The `if (strategy.position_size == 0)` block contains the actual entry logic, which should only trigger when no positions are currently open. I need to handle the daily data computation carefully—using `request.security` with lookahead pulls the previous day's OHLC values. In Python, I'll convert timestamps to dates and compute rolling daily aggregates: the current day's open comes from the first bar, while the previous day's high, low, and close come from the last bar of that day. The FVG detection logic compares price action across bars to identify fair value gaps.
+
+For the state machine that tracks FVG validity periods, I'll iterate through each row and maintain running state variables to determine when positions can be entered based on the FVG's 4-bar validation window and directional confirmation. if i >= 2 and df['low'].iloc[i-2] > df['high'].iloc[i-1]:
+                ig_active = True
+                ig_direction = -1
+                ig_c1_high = df['high'].iloc[i-2]
+                ig_c1_low = df['low'].iloc[i-2]
+                ig_c3_high = df['high'].iloc[i]
+                ig_c3_low = df['low'].iloc[i]
+                ig_validation_end = i + 4
+            
+            validated = False
+            if ig_active and i <= ig_validation_end:
+                if ig_direction == 1 and df['close'].iloc[i] < ig_c1_high:
+                    validated = True
+                if ig_direction == -1 and df['close'].iloc[i] > ig_c1_low:
+                    validated = True
+
+            if validated and not in_position:
+                in_position = True
+                position_entry = i
+                position_direction = ig_direction
+            
+            if validated:
+                ig_active = False
+
+When a bearish FVG forms (low[2] > high[1]), I set direction to -1 and record the candle boundaries. The validation checks whether price has pulled back sufficiently within the 4-bar window—if direction is 1, price must stay below the first candle high; if -1, it must stay above the first candle low. Once validation passes and no position is open, I enter and reset the active flag. For bullish FVG detection, I need to check if the high from 2 bars back stays below the current bar's low. Both bullish and bearish conditions update `ig_active`, `ig_direction`, and related parameters, but they assign opposite direction values. The logic structure appears to handle each FVG type separately rather than as mutually exclusive cases. However, checking the validation logic reveals it only evaluates when `ig_active` is true, which could cause issues if both conditions fire simultaneously. Since an FVG can only be one type at a given bar, the code likely assumes they won't both trigger, but the validation check should handle this scenario safely either way. bars back < current low indicates a bullish FVG with ig_direction = 1. Conversely, when the low from 2 bars back exceeds the current high, it signals a bearish FVG with ig_direction = -1. Both conditions need to be checked in sequence to handle all cases. Once a bullish FVG is detected and the state is active, the validation logic confirms the entry condition is met.
+
+However, there's a potential issue: if a bullish FVG occurs at bar i, the validation check happens at that same bar when ig_active becomes True and ig_direction is set to 1. Since ig_validation_end is calculated as i + 4, the validation at bar i would satisfy the condition i <= i + 4, allowing the validated signal to trigger immediately without waiting for the proper 4-bar window.
+
+But actually, this works because the validation logic checks ig_direction == 1, and with ig_c1_high set to high[2] from the bullish FVG, the close price at bar i won't exceed that threshold if it's truly bullish. So the validation passes correctly and positions can be entered. I should verify this behavior with a concrete example to ensure the logic holds throughout the validation period.
+
+Now I need to implement the Python version. The entry logic executes within `if (strategy.position_size == 0)`, meaning entries only trigger when there's no open position. Since this simulates entry signals rather than actual backtesting, I'll generate all entries without enforcing the zero-position constraint—users can filter by position state if needed. This approach generates an entry whenever conditions align, without checking whether a prior trade exists.
+
+For the bias calculation, I'm using `prevClose` from the previous day rather than the previous day's close. When bar i lands on 2024-01-05 and dayOpen pulls from that same day's open, prevClose[1] correctly references 2024-01-04's close. The bias variables then evaluate whether the current day's open exceeds or falls below the previous day's close to determine market direction.
+
+Now I'll implement the detection logic:
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    df = df.copy()
+    
+    # Convert to datetime and extract date
+    df['datetime'] = pd.to_datetime(df['time'], unit='s', utc=True)
+    df['date'] = df['datetime'].dt.date
+    
+    # Compute daily data for previous day values
+    # Current day's open is the first bar's open of that day
+    daily_groups = df.groupby('date').agg(
+        day_open=('open', 'first'),
+        day_high=('high', 'max'),
+        day_low=('low', 'min'),
+        day_close=('close', 'last'),
+        day_time_first=('time', 'min'),
+        day_time_last=('time', 'last')
+    ).reset_index()
+    
+    # Use shift to get previous day's values
+    daily_groups['prevClose'] = daily_groups['day_close'].shift(1)
+    daily_groups['prevHigh'] = daily_groups['day_high'].shift(1)
+    daily_groups['prevLow'] = daily_groups['day_low'].shift(1)
+    
+    # Create previous day data lookup keyed by date
+    prev_day_lookup = daily_groups.set_index('date')[['prevClose', 'prevHigh', 'prevLow']].to_dict('index')
+    
+    # Map previous day values back to each bar
+    df['prevClose'] = df['date'].map(lambda x: prev_day_lookup.get(x, {}).get('prevClose', np.nan))
+    df['prevHigh'] = df['date'].map(lambda x: prev_day_lookup.get(x, {}).get('prevHigh', np.nan))
+    df['prevLow'] = df['date'].map(lambda x: prev_day_lookup.get(x, {}).get('prevLow', np.nan))
+    df['dayOpen'] = df['date'].map(lambda x: prev_day_lookup.get(x, {}).get('day_open', np.nan))
+    
+    # Calculate BIAS conditions
+    midpoint = (df['prevHigh'] + df['prevLow']) / 2
+    biasUp = df['dayOpen'] > df['prevClose'] & (df['dayOpen'] > midpoint)
+    biasDown = df['dayOpen'] < df['prevClose'] & (df['dayOpen'] < midpoint)
+    df['bias'] = np.where(biasUp, 'Bullish', np.where(biasDown, 'Bearish', 'Neutral'))
+    
+    # Initialize state tracking variables
+    ig_active = False
+    ig_c1_high = np.nan
+    ig_c1_low = np.nan
+    ig_direction = 0
+    ig_validation_end = np.nan
+    
+    trade_num = 0
+    entries = []
+    
+    # Iterate through each row to detect and validate FVG patterns
+    n = len(df)
+    for i in range(n):
+        # Get previous bar index
+        prev_idx = i - 1
+        
+        # Detect bullish FVG: candle 2 bars back has high that stays below current low
+        if i >= 2 and df['high'].iloc[i-2] < df['low'].iloc[i]:
+            ig_active = True
+            ig_direction = 1
+            ig_c1_high = df['high'].iloc[i-2]
+            ig_c1_low = df['low'].iloc[i-2]
+            ig_c3_high = df['high'].iloc[i]
+            ig_c3_low = df['low'].iloc[i]
+            ig_validation_end = i + 4
+        
+        # Detect bearish FVG: candle 2 bars back has low that exceeds current high
+        elif i >= 2 and df['low'].iloc[i-2] > df['high'].iloc[i]:
+            ig_active = True
+            ig_direction = -1
+            ig_c1_high = df['high'].iloc[i-2]
+            ig_c1_low = df['low'].iloc[i-2]
+            ig_c3_high = df['high'].iloc[i]
+            ig_c3_low = df['low'].iloc[i]
+            ig_validation_end = i + 4
+        
+        # Validate FVG and generate entry signals
+        validated = False
+        if ig_active and i <= ig_validation_end:
+            if ig_direction == 1 and df['close'].iloc[i] < ig_c1_high:
+                validated = True
+            if ig_direction == -1 and df['close'].iloc[i] > ig_c1_low:
+                validated = True
+
+        # Entry conditions: long when bearish FVG validates with bullish bias, short when bullish FVG validates with bearish bias
+        if validated and not ig_active:
+            ig_active = False
+        
+        # Determine entry direction and bias alignment
+        system_entry_long = validated and ig_direction == -1
+        system_entry_short = validated and ig_direction == 1
+        bias_value = df['bias'].iloc[i] if i < len(df) else 'Neutral'
+        
+        # Execute long entry on bullish bias confirmation
+        if system_entry_long and bias_value == 'Bullish':
+            trade_num += 1
+            entry_price = df['close'].iloc[i]
+            entry_ts = df['time'].iloc[i]
+            entry_time = datetime.fromtimestamp(entry_ts, tz=timezone.utc).isoformat()
+            
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': entry_ts,
+                'entry_time': entry_time,
+                'entry_price_guess': entry_price,
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': entry_price,
+                'raw_price_b': entry_price
+            })
+        
+        # Execute short entry on bearish bias confirmation
+        if system_entry_short and bias_value == 'Bearish':
+            trade_num += 1
+            entry_price = df['close'].iloc[i]
+            entry_ts = df['time'].iloc[i]
+            entry_time = datetime.fromtimestamp(entry_ts, tz=timezone.utc).isoformat()
+            
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': entry_ts,
+                'entry_time': entry_time,
+                'entry_price_guess': entry_price,
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': entry_price,
+                'raw_price_b': entry_price
+            })
+        
+        # Clear active state after validation
+        if validated:
+            ig_active = False
+    
+    return entries
+
+I need to handle NaN values in the bias calculation during initial days when previous day data isn't available, which occurs for the first 1-2 bars. I should also reconsider how the bias variable works in the original Pine Script logic.
+
+The `bias` variable is calculated once per bar based on daily open and previous close, so it updates each day in Pine Script's bar-by-bar execution. My current approach maps bias per row, which should be correct. The main concern is ensuring the bias value is properly accessed for each bar, especially when prior day data might be missing early in the dataset.
+
+For the FVG detection, I'm identifying bullish patterns where the high from two bars back falls below the current bar's low. The validation logic checks if price has pulled back into the FVG zone—specifically, for bullish FVGs, the close must stay below the original high to confirm the gap remains unfilled.
+
+Similarly, bearish FVGs form when the low from two bars back exceeds the current bar's high, and validation requires the close to remain above the original low. This ensures the imbalance between buying and selling pressure persists.
+
+The bias check then acts as an additional filter: only triggering entries when the day's opening price confirms the expected directional bias. Bullish bias triggers long entries after bullish FVG validation, while bearish bias triggers short entries after bearish FVG validation.
+
+The Pine Script logic also includes an `ig_active := false` reset that triggers whenever validation occurs, regardless of whether an actual entry was executed. This ensures the FVG state clears after each validation window, preventing stale signals from persisting across subsequent bars.
+
+There's a potential issue with how bullish and bearish FVGs are detected sequentially—if a bullish FVG sets `ig_direction = 1` and activates the state, a subsequent bearish FVG detection could overwrite these values before the validation logic runs, potentially causing unexpected behavior in the state machine's directional tracking.
+
+However, examining the actual condition logic reveals these conditions are mutually exclusive for a single bar. A bullish FVG requires `high[2] < low[1]`, while a bearish FVG requires `low[2] > high[1]`—these inequalities cannot both be true simultaneously for the same bar.
+
+That said, there's a timing consideration: if a bullish FVG triggers at bar i-1, then at bar i when `high[2]` actually refers to bar i-2, the conditions become independent of each other. The bullish FVG detection could fire at one bar while the bearish FVG detection fires at another, meaning they don't directly conflict within the same iteration.
+
+The real issue emerges in how each detection manages the validation window. When the bullish FVG fires, it sets `ig_validation_end = i + 4`, creating a window for validation. But if the bearish FVG fires later, it immediately overwrites `ig_direction` to -1 without clearing that previous validation window. This means the system could attempt to validate both signals during overlapping periods, potentially leading to conflicting or incorrect state management.
+
+The Pine Script's bar-by-bar execution with sequential `if` statements creates a race condition where the most recent detection takes precedence, but the validation logic remains tied to the previous setup. I need to ensure that when a new FVG is detected, it properly resets all state variables including clearing any prior validation windows. bars back < current low triggers a bullish FVG with direction = 1. When the low from 2 bars back exceeds the current high, that's a bearish FVG with direction = -1.
+
+Both conditions check `i >= 2`, so they're safe starting from bar index 2. For the validation logic, I need to check if price has pulled back into the FVG zone. If direction is 1 (bullish FVG), the close must stay below the original high. If direction is -1 (bearish FVG), the close must stay above the original low. For the bias check, I'm looking at whether the current candle confirms the direction—bullish bias triggers on long entries, bearish bias on shorts.
+
+For the Python implementation, I'll skip the first two bars since they can't form valid FVGs, then iterate through the remaining data. I'll need to reset the state variables each iteration: FVG detection using the two-bar lookback, validation against the direction and price action, entry conditions based on system signals and bias, and finally updating the active flag. The output structure shows entries with trade numbers, direction, timestamps, entry and exit prices, and additional fields for tracking.
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    df = df.copy()
+    
+    # Convert to datetime and extract date for grouping
+    df['datetime'] = pd.to_datetime(df['time'], unit='s', utc=True)
+    df['date'] = df['datetime'].dt.date
+    
+    # Aggregate daily OHLC data
+    daily_agg = df.groupby('date').agg(
+        day_open=('open', 'first'),
+        day_high=('high', 'max'),
+        day_low=('low', 'min'),
+        day_close=('close', 'last')
+    ).reset_index()
+    
+    # Compute previous day's values using shift
+    daily_agg['prevClose'] = daily_agg['day_close'].shift(1)
+    daily_agg['prevHigh'] = daily_agg['day_high'].shift(1)
+    daily_agg['prevLow'] = daily_agg['day_low'].shift(1)
+    
+    # Map previous day data back to each bar
+    prev_day_map = daily_agg.set_index('date')
+    df['prevClose'] = df['date'].map(lambda x: prev_day_map.loc[x, 'prevClose'] if x in prev_day_map.index else np.nan)
+    df['prevHigh'] = df['date'].map(lambda x: prev_day_map.loc[x, 'prevHigh'] if x in prev_day_map.index else np.nan)
+    df['prevLow'] = df['date'].map(lambda x: prev_day_map.loc[x, 'prevLow'] if x in prev_day_map.index else np.nan)
+    df['dayOpen'] = df['date'].map(lambda x: prev_day_map.loc[x, 'day_open'] if x in prev_day_map.index else np.nan)
+    
+    # Compute the midpoint between previous high and low
+    bias_mid = (df['prevHigh'] + df['prevLow']) / 2
+    
+    # Classify bias direction: bullish when dayOpen exceeds both prevClose and the midpoint, bearish when below both
+    bias_up = df['dayOpen'] > df['prevClose'] & (df['dayOpen'] > bias_mid)
+    bias_down = df['dayOpen'] < df['prevClose'] & (df['dayOpen'] < bias_mid)
+    df['bias'] = np.select([bias_up, bias_down], ['Bullish', 'Bearish'], default='Neutral')
+    
+    # Track FVG state across iterations
+    ig_active = False
+    ig_direction = 0
+    ig_c1_high = np.nan
+    ig_c1_low = np.nan
+    ig_validation_end = np.nan
+    
+    trade_num = 0
+    entries = []
+    
+    n = len(df)
+    
+    for i in range(2, n):
+        bias_val = df['bias'].iloc[i]
+        
+        # Identify bullish FVG where prior high stays below current low
+        if df['high'].iloc[i-2] < df['low'].iloc[i]:
+            ig_active = True
+            ig_direction = 1
+            ig_c1_high = df['high'].iloc[i-2]
+            ig_c1_low = df['low'].iloc[i-2]
+            ig_c3_high = df['high'].iloc[i]
+            ig_c3_low = df['low'].iloc[i]
+            ig_validation_end = i + 4
+        
+        # Identify bearish FVG where prior low exceeds current high
+        elif df['low'].iloc[i-2] > df['high'].iloc[i]:
+            ig_active = True
+            ig_direction = -1
+            ig_c1_high = df['high'].iloc[i-2]
+            ig_c1_low = df['low'].iloc[i-2]
+            ig_c3_high = df['high'].iloc[i]
+            ig_c3_low = df['low'].iloc[i]
+            ig_validation_end = i + 4
+        
+        validated = False
+        if ig_active and i <= ig_validation_end:
+            if ig_direction == 1 and df['close'].iloc[i] < ig_c1_high:
+                validated = True
+            elif ig_direction == -1 and df['close'].iloc[i] > ig_c1_low:
+                validated = True
+        
+        system_entry_long = validated and ig_direction == -1
+        system_entry_short = validated and ig_direction == 1
+        
+        if system_entry_long and bias_val == 'Bullish':
+            trade_num += 1
+            entry_price = df['close'].iloc[i]
+            entry_ts = int(df['time'].iloc[i])
+            entry_time = datetime.fromtimestamp(entry_ts, tz=timezone.utc).isoformat()
+            
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': entry_ts,
+                'entry_time': entry_time,
+                'entry_price_guess': entry_price,
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': entry_price,
+                'raw_price_b': entry_price
+            })
+        
+        if system_entry_short and bias_val == 'Bearish':
+            trade_num += 1
+            entry_price = df['close'].iloc[i]
+            entry_ts = int(df['time'].iloc[i])
+            entry_time = datetime.fromtimestamp(entry_ts, tz=timezone.utc).isoformat()
+            
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': entry_ts,
+                'entry_time': entry_time,
+                'entry_price_guess': entry_price,
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': entry_price,
+                'raw_price_b': entry_price
+            })
+        
+        if validated:
+            ig_active = False
+    
+    return entries
+
+I need to check how the bias condition integrates with the FVG validation. The original script evaluates bias after each bar's data updates, so for any given day, the bias value is constant across all intraday bars. This means I should verify the bias logic matches the intended behavior where bullish or bearish bias acts as a filter on the FVG signals.
+
+For the entry conditions, when system_entry_long triggers (validated with ig_direction == -1), it checks for bullish bias before entering long. Similarly, system_entry_short (validated with ig_direction == 1) requires bearish bias before entering short. The bias classification happens through the np.select statement I created, which maps bullish conditions to 'Bullish' and bearish conditions to 'Bearish'.
+
+I'm now ready to implement the full function, checking that all required fields are properly initialized in the return structure.
+
+The function needs to aggregate daily OHLC data from the dataframe, then calculate previous day's high, low, and close by shifting the daily aggregates. These values get mapped back to each bar along with the current day's open. The bias is determined by comparing the day open against the previous close and midpoint, producing 'Bullish', 'Bearish', or 'Neutral' labels. Finally, the function iterates through the data to generate entry signals based on validated FVG patterns and the bias direction. ig_direction == -1 and close > ig_c1_low:
+                validated = True
+            
+            if validated:
+                ig_active := false
+            
+            system_entry_long = validated and ig_direction == -1 
+            system_entry_short = validated and ig_direction == 1
+            
+            if system_entry_long and bias == "Bullish":
+                entryPrice := close
+                ...
+                strategy.entry("Long", strategy.long, qty=positionSize)
+            
+            if system_entry_short and bias == "Bearish":
+                entryPrice := close
+                ...
+                strategy.entry("Short", strategy.short, qty=positionSize)
+
+After validating, I reset the active flag and check entry conditions based on direction and bias alignment. Long entries require bullish bias, short entries require bearish bias, with position sizing calculated from risk parameters. The logic properly sequences FVG detection, validation, and entry execution. The logic shows that once validated becomes true, it stays true for the remaining bars in the validation window. Looking at the validation check, validated is only set to true when ig_direction is 1 AND close crosses below ig_c1_high, or when ig_direction is -1 AND close crosses above ig_c1_low. After that point, validated never gets reset to false, so it remains true until ig_active is eventually set to false, allowing system_entry_long or system_entry_short to trigger on subsequent bars within the same validation window.
+
+This means each FVG can potentially generate multiple entry signals across consecutive bars. However, in the actual strategy logic, entries are wrapped in a position_size == 0 check, which would only allow one entry to execute. For a pure entry generator without that constraint, I should follow the instructions as written and generate an entry whenever both conditions are met, rather than adding extra filtering logic.
+
+The state machine naturally handles this anyway—after an entry is generated, ig_active gets set to false, which prevents subsequent entries for that same FVG from triggering. This aligns with the original Pine Script behavior where the validation window is bounded by the FVG detection itself. The validation logic properly handles the cross conditions. For a bullish FVG where ig_direction = 1, validation triggers when close dips below the ig_c1_high threshold (the gap's upper boundary). For a bearish FVG with ig_direction = -1, validation occurs when close rises above ig_c1_low (the gap's lower boundary). The logic correctly identifies when price has pulled back into the fair value zone.
+
+Since FVG detection happens at bar i, the validation window spans bars i through i+4, with the close price at each bar determining whether the signal triggers. At i, the close is still above ig_c1_high for a bullish setup (no validation), but if price drops below on a subsequent bar within the window, validated becomes true and the system_entry_long condition can fire.
+
+After validation occurs, ig_active resets to false, preventing duplicate signals. A new FVG detection during the same bar would normally overwrite the direction, but the logic checks both bullish and bearish conditions sequentially, so only one direction gets set. The structure ensures that once an FVG is identified and validated, the state clears before any new signals can interfere. The bullish and bearish conditions are mutually exclusive for any given bar, so there's no conflict. The state variables get set once per detection and persist until validation occurs. I can implement this straightforwardly without needing to track additional state.
+
+Here's my implementation:
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    df = df.copy()
+    
+    # Convert to datetime and extract date for grouping
+    df['datetime'] = pd.to_datetime(df['time'], unit='s', utc=True)
+    df['date'] = df['datetime'].dt.date
+    
+    # Aggregate daily OHLC data
+    daily_agg = df.groupby('date').agg(
+        day_open=('open', 'first'),
+        day_high=('high', 'max'),
+        day_low=('low', 'min'),
+        day_close=('close', 'last')
+    ).reset_index()
+    
+    # Compute previous day's OHLC
+    daily_agg['prevClose'] = daily_agg['day_close'].shift(1)
+    daily_agg['prevHigh'] = daily_agg['day_high'].shift(1)
+    daily_agg['prevLow'] = daily_agg['day_low'].shift(1)
+    
+    # Map previous day data back to each bar
+    prev_day_map = daily_agg.set_index('date')
+    df['prevClose'] = df['date'].map(lambda x: prev_day_map.loc[x, 'prevClose'] if x in prev_day_map.index else np.nan)
+    df['prevHigh'] = df['date'].map(lambda x: prev_day_map.loc[x, 'prevHigh'] if x in prev_day_map.index else np.nan)
+    df['prevLow'] = df['date'].map(lambda x: prev_day_map.loc[x, 'prevLow'] if x in prev_day_map.index else np.nan)
+    df['dayOpen'] = df['date'].map(lambda x: prev_day_map.loc[x, 'day_open'] if x in prev_day_map.index else np.nan)
+    
+    # Calculate BIAS based on comparing dayOpen to previous day's close and midpoint
+    bias_mid = (df['prevHigh'] + df['prevLow']) / 2
+    bias_up = df['dayOpen'] > df['prevClose'] & (df['dayOpen'] > bias_mid)
+    bias_down = df['dayOpen'] < df['prevClose'] & (df['dayOpen'] < bias_mid)
+    df['bias'] = np.select([bias_up, bias_down], ['Bullish', 'Bearish'], default='Neutral')
+    
+    # Initialize state tracking
+    ig_active = False
+    ig_direction = 0
+    ig_c1_high = np.nan
+    ig_c1_low = np.nan
+    ig_validation_end = np.nan
+    
+    trade_num = 0
+    entries = []
+    
+    n = len(df)
+    
+    for i in range(2, n):
+        bias_val = df['bias'].iloc[i]
+        
+        # Bullish FVG: high from 2 bars back stays below current low
+        if df['high'].iloc[i-2] < df['low'].iloc[i]:
+            ig_active = True
+            ig_direction = 1
+            ig_c1_high = df['high'].iloc[i-2]
+            ig_c1_low = df['low'].iloc[i-2]
+            ig_c3_high = df['high'].iloc[i]
+            ig_c3_low = df['low'].iloc[i]
+            ig_validation_end = i + 4
+        
+        # Bearish FVG: low from 2 bars back exceeds current high
+        elif df['low'].iloc[i-2] > df['high'].iloc[i]:
+            ig_active = True
+            ig_direction = -1
+            ig_c1_high = df['high'].iloc[i-2]
+            ig_c1_low = df['low'].iloc[i-2]
+            ig_c3_high = df['high'].iloc[i]
+            ig_c3_low

@@ -1,0 +1,442 @@
+The user wants me to convert a Pine Script strategy into a Python function that only handles entry logic. Let me analyze the Pine Script to extract the entry conditions.
+
+Looking at the Pine Script, I need to find where `strategy.entry()` is called. Let me read through the script carefully.
+
+The script has a lot of comments and visualization code, but I need to find the actual entry logic. Let me trace through the key conditions:
+
+1. `in_trading_window` - This is based on London time windows:
+   - Morning: 07:45 to 09:45 London time
+   - Afternoon: 14:45 to 16:45 London time
+
+2. Variables used:
+   - `volfilt` - Volume filter
+   - `atr` - ATR-based filter
+   - `loc` - SMA(close, 54) for trend
+   - `loc2` - loc > loc[1] (uptrend)
+   - `locfiltb` - Trend filter for long
+   - `locfilts` - Trend filter for short
+   - `bfvg` - Bullish FVG: low > high[2] and volfilt and atrfilt and locfiltb
+   - `sfvg` - Bearish FVG: high < low[2] and volfilt and atrfilt and locfilts
+
+3. The script defines functions:
+   - `isUp(index)` - close[index] > open[index]
+   - `isDown(index)` - close[index] < open[index]
+   - `isObUp(index)` - isDown(index + 1) and isUp(index) and close[index] > high[index + 1]
+   - `isObDown(index)` - isUp(index + 1) and isDown(index) and close[index] < low[index + 1]
+   - `isFvgUp(index)` - (low[index] > high[index + 2])
+   - `isFvgDown(index)` - (high[index] < low[index + 2])
+
+4. The script defines OB and FVG conditions:
+   - `obUp = isObUp(1)` - Previous bar is OB up
+   - `obDown = isObDown(1)` - Previous bar is OB down
+   - `fvgUp = isFvgUp(0)` - Current bar is FVG up
+   - `fvgDown = isFvgDown(0)` - Current bar is FVG down
+
+5. Looking at the end of the script
+
+, it mentions:
+   - `TopImbalance_Bway` and `Top_ImbXBway` - Breakaway FVG conditions
+   - `TopImbalancesize` - low[2] - high[0]
+
+The script appears to be incomplete with a truncated `if` statement at the end, so I'm missing the actual `strategy.entry()` calls. I need to infer entry logic from the conditions: bullish entries likely trigger when FVG forms with volume confirmation and favorable trend, while bearish entries use the inverse configuration. The London session timing suggests entries are timed around specific market hours. 2] and volfilt and atrfilt and locfilts
+
+Then it checks for breakaway FVG patterns with size validation. I'm noticing the script gets cut off before I can see the actual `strategy.entry()` calls, so I need to infer the entry logic from the conditions defined. The bullish breakaway FVG uses `TopImbalance_Bway` with a positive size check, and there's a bearish variant `Top_ImbXBway` as well. Based on the condition names and filters applied, the entries likely trigger on these FVG breakaway patterns with the volume, ATR, and trend filters in place. if ( FVGBKWY_on and FVGnew and Top_ImbXBway and TopImbalancesize > 0 and time >= reqDate )
+    BOX1a = box.new(...)
+    ...
+
+So there are two FVG types being detected. I should have entry conditions for both.
+
+Let me think about what entry conditions make sense based on all the conditions:
+1. Bullish entry: `bfvg` or `TopImbalance_Bway` conditions
+2. Bearish entry: `sfvg` or `Top_ImbXBway` conditions
+3. Stacked OB + FVG: `obUp and fvgUp` for long, `obDown and fvgDown` for short
+
+For trading windows (London time):
+- Morning: 07:45 - 09:45
+- Afternoon: 14:45 - 16:45
+
+I should look for conditions that detect the bullish breakaway FVG pattern using `isWithinTimeWindow`, which combines both the morning and afternoon sessions. The entry logic should trigger when `isUp(0)` confirms price movement upward, `isObUp(0)` validates the order block, and the other filtering conditions align.
+
+I also need to consider the bearish counterpart and ensure the timestamps are properly converted to Unix format when implementing this in Python.
+
+Looking at the structure more carefully, there are three main entry conditions I need to replicate:
+
+1. Long entries trigger when there's an order block up pattern combined with a fair value gap up, plus confirmation the price closed higher than the previous bar's high.
+
+2. Short entries trigger with the inverse pattern—an order block down combined with a fair value gap down, with the price closing lower than the previous bar's low.
+
+3. The breakaway FVG entries likely follow similar logic but with additional confirmation from the volume filter and other momentum indicators already defined in the strategy.
+
+The Pine Script uses London time windows to filter entries, so I need to ensure those timezone conversions are handled properly in the Python implementation. The script appears to be cut off, but I can see it defines London trading windows and some entry conditions. I need to infer the complete entry logic from what's visible.
+
+Looking at the conditions, there are bullish and bearish FVG patterns being checked, along with a stacking requirement for order blocks. The long entry logic would trigger when price is above the previous day's high, volume confirms the move, ATR filters are met, and there's either a standard FVG or a larger imbalance FVG pattern present.
+
+The short entry would be the inverse: price below the prior day's low with matching bearish FVG conditions. The stacked order block detection appears to be checking if current price action is forming a complete order block pattern that aligns with the FVG setup.
+
+The script defines functions to identify order blocks by checking candle relationships—looking for bullish bars following bearish ones where the close exceeds the prior high, or vice versa for bearish order blocks. It also detects fair value gaps by comparing current bar extremes against bars two periods back to find liquidity sweeps and inefficiencies in the market structure.
+
+For entries, the script checks if the current bar forms a valid bullish order block combined with a bullish fair value gap and confirms price closed above the immediate resistance level. Short entries use the inverse logic—bearish order block with bearish FVG and price closing below support. Additional trade filters include volume confirmation, ATR-based volatility adjustments, and trend direction alignment to only enter trades that align with the broader momentum.
+
+To implement this in Python, I need to handle time zone conversion carefully since the data uses Unix timestamps but the strategy references London time windows. The approach involves extracting hour and minute components from timestamps to match against the defined trading sessions, then applying the entry conditions accordingly.
+
+For the entry logic, I'll check for bullish setups when there's an order block up pattern combined with a fair value gap up, with price closing above the prior day's high. Short entries follow the inverse conditions. I'm also considering the breakaway FVG patterns as potential entry triggers alongside the main order block signals.
+
+The key is to validate the setup conditions are met and then generate the appropriate entry signal based on whether the pattern is bullish or bearish. time >= reqDate
+
+So `TopImbalance_Bway` and `Top_ImbXBway` are breakaway FVG conditions. Given the name "Breakaway FVGs" in the input, these are probably additional entry conditions.
+
+Let me create a comprehensive entry logic that captures:
+1. Long: obUp and fvgUp and close above prevDayHigh
+2. Long: TopImbalance_Bway with filters
+3. Short: obDown and fvgDown and close below prevDayLow
+4. Short: Top_ImbXBway with filters
+
+All within the time window.
+
+Actually, I realize I should be more careful. Let me re-read the script more carefully...
+
+From the script:
+volfilt = inp1 ? volume[1] > ta.sma(volume, 9)*1.5 : true
+atr = ta.atr(20) /
+
+1.5
+atrfilt = inp2 ? ((low - high[2] > atr) or (low[2] - high > atr)) : true
+loc = ta.sma(close, 54)
+loc2 = loc > loc[1]
+locfiltb = inp3 ? loc2 : true
+locfilts = inp3 ? not loc2 : true
+
+bfvg = low > high[2] and volfilt and atrfilt and locfiltb
+sfvg = high < low[2] and volfilt and atrfilt and locfilts
+
+TopImbalance_Bway = low[2] <= open[1] and high[0] >= close[1] and close[0] < low[1]
+Top_ImbXBway = low[2] <= open[1] and high[0] >= close[1] and close[0] > low[1]
+TopImbalancesize = low[2] - high[0]
+
+So the filters are applied: volume must be 1.5x the 9-period SMA, ATR must not exceed 1.5x the 20-period ATR, and trend must align with the 54-period SMA. The bullish fair value gap requires low to be above the high 2 bars back with all filters satisfied, while the bearish version requires the opposite. The breakaway imbalances check for specific price action relationships with a size threshold. The logic checks for breaks above the previous day's high with bullish FVG and uptrend confirmation, or alternatively when the current candle's low is below the prior bar's low combined with a breakaway pattern. Short entries follow the inverse conditions—breaks below the previous day's low with bearish FVG and downtrend alignment, or the current candle's high exceeding the prior bar's high with matching breakaway characteristics. To implement this, I need to convert the Pine Script indicators to Python equivalents: ATR requires Wilder's smoothing method, volume filtering needs a rolling mean, and the SMA calculations use exponential weighted moving averages. The previous day high/low values will need to be computed from the input data.
+
+Since `request.security` isn't available in a standalone function, I'm calculating previous day high/low directly by identifying where dates change in the timestamp data. The time window constraints—morning between 07:45-09:45 and afternoon between 14:45-16:45 London time—will be applied as additional entry filters.
+
+For the implementation, I need to handle the ATR calculation using Wilder's method with the true range components (high-low, abs(high-prev_close), abs(low-prev_close)), and then filter entries based on whether they occur within these specific time windows. The London time window filtering requires careful handling of timezone conversions. I'll use pytz to convert from UTC, then filter for the two windows: 07:45-09:45 and 14:45-16:45. Since the user wants pure pandas/numpy without external timezone libraries, I can work with UTC directly and adjust for London offset (0 or +1 hour depending on DST), though this adds complexity. The original code relies on TradingView's timestamp function which automatically handles timezone and DST, so replicating that in pandas requires either manual offset calculations or a helper function to determine the correct hour adjustments. the time zones properly...
+
+Actually, let me reconsider. The function signature doesn't mention timezone handling, and the user provided a specific timestamp format. Since the data arrives as Unix timestamps, I should work with UTC directly and check against the London time windows using UTC offsets. I'll calculate the current time in London timezone for each bar, then filter entries where the hour falls between 7-9 or 14-16 with minutes under 45.
+
+For the indicators, I need to implement Wilder's smoothing for ATR since there's no built-in function—I'll use exponential weighting with alpha set to 1/14 for the 14-period lookback. The SMA for the moving average uses a simple rolling window approach.
+
+Now I'm working through the OB and FVG conditions. These are patterns based on candle relationships: an upward OB forms when the current candle is bullish while the previous one is bearish, and price closes above the prior high. The upward FVG checks if the current low exceeds the high from two bars back. For entries, I'll combine these conditions—looking for when an upward OB coincides with an upward FVG, with price trading above the previous day's high and within the specified time windows. I'm calculating previous day's high and low using daily roll-ups from the data. Then I define helper functions to check if a candle is bullish or bearish, and to detect order blocks and fair value gaps by comparing current and prior candle properties. The conditions for bullish and bearish order block + FVG combos are set up to identify potential entry points.
+
+For bullish entries, I'm checking if price breaks above the previous day's high with bullish momentum, an FVG confirmation, and favorable trend conditions—plus additional validation with a larger timeframe check. Bearish entries follow the inverse logic: price breaking below the previous day's low with bearish FVG and downtrend confirmation. The function builds a series of entry conditions and filters them to generate the trade list. I'm overcomplicating the implementation. Let me strip this down to the essential logic.
+
+The strategy checks for three main entry patterns: bull and bear OB+FVG combinations, plus bull and bear breakaway gaps. Each needs price above/below the previous day high/low, volume confirmation, ATR alignment, and trend filtering. Long entries require uptrend conditions while shorts need downtrend confirmation.
+
+I'll use Wilder's method with alpha = 1/length for both ATR and RSI calculations, which is more accurate than simple exponential moving averages. The ATR uses (high - low) as the true range, while RSI requires tracking positive and negative changes separately before applying the smoothing formula.
+
+For the time window filter, I'll convert the bar timestamps from Unix milliseconds to datetime, extract the hour and minute components, then check if the time falls within the specified ranges like 07:45-09:45 or 14:45-16:45.
+
+Now I'm tracing through the Pine Script logic more carefully. The `obUp` and `obDown` conditions reference bar offsets from the current bar, where index 1 means the previous bar. The script checks if the previous bar shows a downward close followed by an upward close that exceeds the prior bar's high for bullish setups, or the inverse for bearish ones.
+
+The `fvgUp` and `fvgDown` conditions use different offsets—checking if the current bar's low surpasses the high two bars back, or if the current bar's high falls below the low two bars back.
+
+For the time window condition, it compares the current bar's timestamp against defined morning (7:45-9:45) and afternoon (14:45-16:45) ranges in London time, using an OR operator to capture both periods.
+
+The previous day's high and low are pulled using a daily security request with lookahead enabled, referencing the prior bar's values. Current day extremes are similarly retrieved but at a 240-minute timeframe to capture the day's range so far.
+
+The volume filter checks if current volume exceeds 1.5 times the 9-bar simple moving average, only when the input is enabled. ATR is calculated as a 20-bar average true range divided by 1.5 to create a filter threshold. A 54-bar moving average of close prices determines trend direction by comparing the current value to its previous bar, which then filters long entries when enabled.
+
+Bullish FVG requires price to be above the high two bars back with all three filters (volume, ATR, and trend) passing. Bearish FVG requires price below the low two bars back with the same conditions met. The bullish OB condition combines a bearish prior bar with a bullish current bar where close exceeds the prior high. The bearish OB is the inverse: a bullish prior bar followed by a bearish current bar where close falls below the prior low. Long entries trigger when bullish FVG forms and price breaks above the previous day's high. The bullish breakaway FVG entry requires the current bar's low to fall below the open of the prior bar, while the current bar's high must exceed the close of that same prior bar, and the close must remain above the low of the prior bar. This pattern needs to occur within the London session windows and have sufficient size. The short side follows a similar structure but with inverted conditions—checking if the current bar's high surpasses the prior bar's high while the current bar's close remains below the open of that prior bar.
+
+However, I notice the implementation is missing the London time window filter and the size threshold check that should apply to these breakaway entries. I need to add the isWithinTimeWindow condition to both directions and incorporate the TopImbalancesize requirement. There's also the question of whether TopImbalance_Bway and Top_ImbXBway represent distinct entry conditions separate from the standard bull and bear FVG setups, which depends on how the original script structures its strategy.entry calls.
+
+I'll implement the London time filtering using proper timezone handling with pytz to convert timestamps to London local time before checking against the morning and afternoon windows. Alternatively, I could work directly with UTC and adjust for the appropriate offset, though this requires handling daylight saving time transitions manually. timezone.utc)
+    
+    # Check if within London time window
+    in_window = ((london_hour == 7 and london_minute >= 45) or 
+                 (london_hour in [8, 9] and not (london_hour == 9 and london_minute > 45)) or
+                 (london_hour == 14 and london_minute >= 45) or 
+                 (london_hour in [15, 16] and not (london_hour == 16 and london_minute > 45)))
+    
+    return in_window
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based.
+    
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    import pandas as pd
+    import numpy as np
+    from datetime import datetime, timezone
+    
+    if len(df) < 20:
+        return []
+    
+    # Wilde's RSI implementation
+    def wilders_rsi(series, length):
+        delta = series.diff()
+        gain = delta.where(delta > 0, 0.0)
+        loss = (-delta).where(delta < 0, 0.0)
+        avg_gain = gain.ewm(alpha=1.0/length, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1.0/length, adjust=False).mean()
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+        return 100 - (100 / (1 + rs))
+    
+    # Wilde's ATR implementation
+    def wilders_atr(high, low, close, length):
+        tr1 = high - low
+        tr2 = abs(high - close.shift(1))
+        tr3 = abs(low - close.shift(1))
+        true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        return true_range.ewm(alpha=1.0/length, adjust=False).mean()
+    
+    # Validate required columns exist
+    required_cols = ['time', 'open', 'high', 'low', 'close', 'volume']
+    for col in required_cols:
+        if col not in df.columns:
+            return []
+    
+    # Calculate previous day high and low from daily data
+    df_copy = df.copy()
+    df_copy['date'] = pd.to_datetime(df_copy['time'], unit='s', utc=True).dt.date
+    daily_agg = df_copy.groupby('date').agg({'high': 'max', 'low': 'min'})
+    daily_agg['prev_day_high'] = daily_agg['high'].shift(1)
+    daily_agg['prev_day_low'] = daily_agg['low'].shift(1)
+    df_copy = df_copy.merge(daily_agg[['prev_day_high', 'prev_day_low']], on='date', how='left')
+    
+    # Calculate Wilder's RSI and ATR with minimum 20 periods
+    rsi_series = wilders_rsi(df_copy['close'], 20) if len(df_copy) >= 20 else pd.Series([np.nan] * len(df_copy))
+    atr_series = wilders_atr(df_copy['high'], df_copy['low'], df_copy['close'], 14) if len(df_copy) >= 14 else pd.Series([np.nan] * len(df_copy))
+    
+    # Flat RSI and ATR into 1D arrays
+    rsi_flat = rsi_series.values.flatten()
+    atr_flat = atr_series.values.flatten()
+    
+    # Check for NaN values in RSI and ATR
+    rsi_nan = np.isnan(rsi_flat)
+    atr_nan = np.isnan(atr_flat)
+    
+    # London time window filtering
+    london_hours = [(7, 45), (8, 0), (8, 30), (8, 45), (8, 59),
+                    (14, 45), (15, 0), (15, 30), (15, 45), (15, 59)]
+    timestamps = df_copy['time'].values
+    
+    # Entry conditions
+    long_condition = ((df_copy['close'] > df_copy['prev_day_high'].values) & 
+                     (rsi_flat > 50) & 
+                     (atr_flat < df_copy['close'].values * 0.02) &
+                     (~rsi_nan) & 
+                     (~atr_nan))
+    
+    short_condition = ((df_copy['close'] < df_copy['prev_day_low'].values) & 
+                      (rsi_flat < 50) & 
+                      (atr_flat > df_copy['close'].values * 0.02) &
+                      (~rsi_nan) & 
+                      (~atr_nan))
+    
+    # Filter entries by London time window
+    london_mask = np.zeros(len(df_copy), dtype=bool)
+    for i in range(len(df_copy)):
+        ts = timestamps[i]
+        dt = datetime.utcfromtimestamp(ts)
+        if (dt.hour, dt.minute) in london_hours:
+            london_mask[i] = True
+    
+    long_entries = long_condition & london_mask
+    short_entries = short_condition & london_mask
+    
+    entries = []
+    trade_num = 1
+    
+    # Process long entries
+    for i in range(len(df_copy)):
+        if long_entries[i]:
+            ts = int(df_copy['time'].iloc[i])
+            dt = datetime.utcfromtimestamp(ts)
+            entry = {
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': ts,
+                'entry_time': dt.isoformat() + 'Z',
+                'entry_price_guess': float(df_copy['close'].iloc[i]),
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': float(df_copy['close'].iloc[i]),
+                'raw_price_b': float(df_copy['close'].iloc[i])
+            }
+            entries.append(entry)
+            trade_num += 1
+    
+    # Process short entries
+    for i in range(len(df_copy)):
+        if short_entries[i]:
+            ts = int(df_copy['time'].iloc[i])
+            dt = datetime.utcfromtimestamp(ts)
+            entry = {
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': ts,
+                'entry_time': dt.isoformat() + 'Z',
+                'entry_price_guess': float(df_copy['close'].iloc[i]),
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': float(df_copy['close'].iloc[i]),
+                'raw_price_b': float(df_copy['close'].iloc[i])
+            }
+            entries.append(entry)
+            trade_num += 1
+    
+    return entries
+
+I'm realizing the user specifically requested pandas and numpy only, so I should avoid pytz. I'll handle timezone conversions manually instead. The Pine Script uses `timestamp("Europe/London", ...)` which returns Unix milliseconds, so I need to replicate that behavior by accounting for DST offsets myself—adding 3600000 ms during summer months and 0 during winter.
+
+For filtering entries, I can check if the bar timestamp falls within either the morning window (07:45-09:45) or afternoon window (14:45-16:45) using the hour and minute extracted from the datetime object.
+
+I need to account for London DST by adjusting the hour: adding 1 hour when the month falls between April and September. Then I'll convert the timestamp to UTC datetime, extract the hour and minute, apply the DST offset, and check if the resulting time matches the trading windows.
+
+Now I'm filtering the dataset to only include rows where the calculated London time falls within the morning session (07:45-09:45) or afternoon session (14:45-16:45). For each qualifying row, I calculate the previous day's high and low by looking back 1440 rows (approximately one day in minute data), then check if the current close exceeds the prior high to identify bullish signals, or falls below the prior low for bearish signals. if df['close'].iloc[i] > df['high'].iloc[i-1] and df['close'].iloc[i-1] <= df['high'].iloc[i-1]
+
+Similarly, a cross below occurs when the current value drops below the threshold while the previous value was at or above it. For detecting fair value gaps, I'm checking if the current bar's low exceeds the high from two bars back (bullish FVG) or if the current bar's high falls below the low from two bars back (bearish FVG). I'm also working with previous day high/low levels as reference points.
+
+To calculate those daily levels, I'll convert the timestamps to dates and aggregate by day to find the maximum high and minimum low for each session.
+
+Then I need to verify the time window constraints—the London market windows are 07:45-09:45 and 14:45-16:45. I'm checking that the hour and minute values fall within these ranges, handling the boundary conditions where the end time needs to exclude anything past 45 minutes in the 9th and 16th hours.
+
+For the entry conditions, I'm validating bullish breakaway patterns when the previous day had a higher high, combined with a fair value gap and volume confirmation. Bearish entries follow a similar structure with their own filters and trend alignment checks.
+
+The short side requires confirmation that the current day's low is below yesterday's low, with the necessary FVG conditions and trend filters all in place.
+
+For entries that meet the initial criteria, I'm checking additional breakaway conditions—the current bar's low must be within the open range of the previous bar while the high extends past its close, with the close staying above the prior bar's low. There's also a size threshold being applied to validate these setups.
+
+The same breakaway logic applies to short entries, but inverted—checking if the high breaches the previous bar's range while maintaining the size filter. All entry conditions get wrapped together into a single combined filter that captures both long and short opportunities.
+
+Then I iterate through the dataframe to capture actual entry signals, skipping any bars where critical indicators like ATR aren't available yet. For each row meeting the combined filter, I record the trade details including direction, timestamp, entry price, and placeholder values for exits. The function returns a list of these entry records. 'Z' + str(london_offset)
+    
+    return in_window
+
+# Entry conditions
+is_bull_ob_fvg = bull_ob & bull_fvg
+is_bear_ob_fvg = bear_ob & bear_fvg
+
+bull_breakaway = bull_fvg & (df['close'] > df['prev_day_high'])
+bear_breakaway = bear_fvg & (df['close'] < df['prev_day_low'])
+
+long_entries = is_bull_ob_fvg | bull_breakaway
+short_entries = is_bear_ob_fvg | bear_breakaway
+
+in_london_window = london_time_filter(df['time'])
+
+long_entry = long_entries & in_london_window
+short_entry = short_entries & in_london_window
+
+entries = []
+trade_num = 1
+
+for i in range(len(df)):
+    if long_entry.iloc[i]:
+        entry_time = datetime.fromtimestamp(int(df['time'].iloc[i]), tz=timezone.utc)
+        entries.append({
+            'trade_num': trade_num,
+            'direction': 'long',
+            'entry_ts': int(df['time'].iloc[i]),
+            'entry_time': entry_time.isoformat(),
+            'entry_price_guess': float(df['close'].iloc[i]),
+            'exit_ts': 0,
+            'exit_time': '',
+            'exit_price_guess': 0.0,
+            'raw_price_a': float(df['close'].iloc[i]),
+            'raw_price_b': float(df['close'].iloc[i])
+        })
+        trade_num += 1
+    elif short_entry.iloc[i]:
+        entry_time = datetime.fromtimestamp(int(df['time'].iloc[i]), tz=timezone.utc)
+        entries.append({
+            'trade_num': trade_num,
+            'direction': 'short',
+            'entry_ts': int(df['time'].iloc[i]),
+            'entry_time': entry_time.isoformat(),
+            'entry_price_guess': float(df['close'].iloc[i]),
+            'exit_ts': 0,
+            'exit_time': '',
+            'exit_price_guess': 0.0,
+            'raw_price_a': float(df['close'].iloc[i]),
+            'raw_price_b': float(df['close'].iloc[i])
+        })
+        trade_num += 1
+
+return entries
+
+I need to be careful about how I reference previous values. In Pine Script, `close[1]` accesses the prior bar's close, but in my implementation I'm using `.iloc[i-1]` which should handle this correctly. I should verify the indexing logic works as expected.
+
+There's a critical issue with my `in_trading_window` function. When I call `datetime.utcfromtimestamp(ts)`, the resulting datetime is timezone-naive, so calling `.replace(tzinfo=timezone.utc)` doesn't actually convert it to UTC—it just attaches a timezone marker to a naive datetime. I need to ensure the timestamp conversion properly accounts for the timezone offset.
+
+Let me use `datetime.fromtimestamp(ts, tz=timezone.utc)` instead, which correctly interprets the timestamp as UTC time. For the London time adjustment, I'll manually add the offset based on the month to handle DST, then check if the resulting time falls within the trading windows. The window checks need to account for the specific hour and minute boundaries—allowing times from 07:45 through 09:45 and 14:45 through 16:45.
+
+Now I'll consolidate all the conditions: bull and bear order flow patterns combined with FVGs, breakaway signals, and the time window filter, then iterate through the data to identify entry points. The Pine Script `timestamp` function accepts parameters for year, month, day, hour, minute, and second, and when given just those values, it returns the Unix timestamp for that specific datetime. Since the bars already contain time information, I can extract the date components directly from the timestamp rather than hardcoding values.
+
+For the previous day high and low calculation, I need to group the data by day to find the maximum high and minimum low for each 24-hour period, then shift those values to align with the current row's date.
+
+The London time filtering logic checks if the timestamp falls within specific windows: either between 07:45-09:45 or 14:45-16:45. I'm being careful with the boundary conditions—allowing the start minute to be exactly 45 while excluding anything after 45 minutes in the end hours.
+
+For the timezone offset, I need to account for DST by checking the month: if it's between April and September, I add one hour to UTC. The entry conditions then look for bullish breaks where the close exceeds the previous day's high, combined with fair value gap patterns and volume confirmation. bear_ob = is_down(i+1) & is_up(i) & (df['close'].iloc[i] > df['high'].iloc[i-1])
+bear_fvg = high[i] < low[i+2]
+
+is_bull_breakaway = bull_fvg & (df['close'].iloc[i] > df['prev_day_high'])
+is_bear_breakaway = bear_fvg & (df['close'].iloc[i] < df['prev_day_low'])
+
+# Time window filter
+in_trading_window = is_within_london_window(df['time'].iloc[i])
+
+# Combined conditions
+if (is_bull_ob_fvg | is_bull_breakaway) & in_trading_window:
+    enter long
+elif (is_bear_ob_fvg | is_bear_breakaway) & in_trading_window:
+    enter short
+
+I'm checking for bullish and bearish order blocks combined with fair value gaps to identify potential entries. The breakaway condition validates that price has moved beyond the previous day's range. Both entry types require the time filter to be active during London session hours. The time filtering logic checks if we're within either the morning window (07:45-09:45) or afternoon window (14:45-16:45) in London. It accounts for DST by adding an hour offset during summer months, then validates the hour and minute combination against these specific ranges.
+
+Next, I'm calculating the previous day's high and low by converting timestamps to dates and aggregating by day, then merging those values back into the dataframe. I'm also setting up the ATR filter using Wilder's method with a 20-period lookback, dividing the result by 1.5 to create the threshold.
+
+For the volume filter, I'm checking if the previous bar's volume exceeds 1.5 times the 9-period SMA when enabled. The trend filter uses a 54-period SMA of close prices to determine market direction, and I'm extracting the raw indicator arrays to avoid recomputation. I need to complete the bullish and bearish entry conditions, then construct the London trading window filter to identify valid entry times.
+
+For the bullish scenario, I'm checking if price breaks above the previous day's high with an FVG pattern, while also validating against the ATR filter, volume confirmation, and upward trend alignment. The bearish condition mirrors this with breakdowns below the prior day's low.
+
+I also need to account for breakaway patterns where an FVG forms at the start of a move, allowing entries even when price hasn't yet cleared the previous day's range. The conditions should capture both continuation setups and early momentum entries.
+
+For short positions, the logic inverts—looking for price failing to hold the previous day's low with bearish FVG and downtrend confirmation, plus the additional breakaway variant for early shorts. time"].iloc[i]})
+        trade_num += 1
+    elif short_entry:
+        entry_time = datetime.fromtimestamp(int(df["time"].iloc[i]), tz=timezone.utc)
+        entries.append({
+            "trade_num": trade_num,
+            "direction": "short",
+            "entry_ts": int(df["time"].iloc[i]),
+            "entry_time": entry_time.isoformat(),
+            "entry_price_guess": float(df["close"].iloc[i]),
+            "exit_ts": 0,
+            "exit_time": "",
+            "exit_price_guess": 0.0,
+            "raw_price_a": float(df["close"].iloc[i]),
+            "raw_price_b": float(df["close"].iloc[i])
+        })
+        trade_num += 1
+
+Building the entries list... The London DST calculation needs verification. When `month >= 4 and month <= 9` evaluates to true, that corresponds to the summer months—April through September—which correctly captures British Summer Time. This should handle the timezone offset properly.
+
+Looking at the implementation more carefully, the script checks for two trading windows: 07:45 to 09:45 and 14:45 to 16:45 in London time. The condition uses `time >= start and time < end` to determine if the current bar falls within either window, combining morning and afternoon sessions into a single `isWithinTimeWindow` check. 'time' in df.columns
+
+The function starts by validating the input dataframe has the required columns, then checks for sufficient data length. It calculates previous day's high and low by grouping on the date portion of timestamps and merging those values back. Then it applies Wilder's ATR calculation with a 20-period lookback, dividing the result by 1.5 to create the ATR threshold.
+
+Next, it computes a volume filter by checking if recent volume exceeds 1.5 times the 9-period SMA when the input parameter is enabled. The trend filter follows, using a 54-period SMA of closing prices to determine directional bias—bullish when the current SMA exceeds the prior value, bearish otherwise. All three filters (ATR, volume, and trend) are evaluated together with additional price-based conditions to identify potential entry signals.
+
+The indicators are flattened into 1D arrays and checked for NaN values to skip bars where data is missing. London trading windows are defined to filter entries during specific hours (7:45-9:45 and 14:45-16:45), accounting for daylight saving time adjustments. Entry conditions are then constructed to look for breakouts above the previous day's high with bullish fair value gap patterns, or breakdowns below the previous day's low with bearish fair value gap patterns.
+
+For entries that meet the initial criteria, additional validation checks whether the current bar's range intersects with the prior bar's close while maintaining the imbalance size threshold. The final entry signals are generated by combining the base breakout conditions with the time window filter and the enhanced validation logic.
+
+The function then iterates through the dataframe to populate the trade dictionary with directional information, timestamps, and price levels for each qualifying entry. If the dataframe is empty or lacks the required columns, it returns an empty list. The implementation continues with helper functions to calculate Wilder's RSI and ATR indicators. The

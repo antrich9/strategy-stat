@@ -1,0 +1,57 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    df = df.copy()
+    # Convert bar timestamps to datetime (UTC) then to America/New_York for time‑of‑day checks
+    df['dt'] = pd.to_datetime(df['time'], unit='s', utc=True).dt.tz_convert('America/New_York')
+    # Define the afternoon trading window: 09:30 – 10:55 New York time
+    hour = df['dt'].dt.hour
+    minute = df['dt'].dt.minute
+    in_afternoon = ((hour == 9) & (minute >= 30)) | ((hour == 10) & (minute < 55))
+    # Fair Value Gap (FVG) conditions: bullish = low > high[2], bearish = high < low[2]
+    high_2 = df['high'].shift(2)
+    low_2 = df['low'].shift(2)
+    valid = df['low'].notna() & df['high'].notna() & high_2.notna() & low_2.notna()
+    long_mask = valid & in_afternoon & (df['low'] > high_2)
+    short_mask = valid & in_afternoon & (df['high'] < low_2)
+    entries = []
+    trade_num = 1
+    for i in range(len(df)):
+        if long_mask.iloc[i]:
+            ts = int(df['time'].iloc[i])
+            entry_price = df['close'].iloc[i]
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': ts,
+                'entry_time': datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                'entry_price_guess': entry_price,
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': entry_price,
+                'raw_price_b': entry_price
+            })
+            trade_num += 1
+        elif short_mask.iloc[i]:
+            ts = int(df['time'].iloc[i])
+            entry_price = df['close'].iloc[i]
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': ts,
+                'entry_time': datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                'entry_price_guess

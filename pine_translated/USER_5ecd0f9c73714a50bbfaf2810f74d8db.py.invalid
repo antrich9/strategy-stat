@@ -1,0 +1,149 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    
+    # Convert time to datetime
+    df = df.copy()
+    df['datetime'] = pd.to_datetime(df['time'], unit='s', utc=True)
+    df = df.set_index('datetime')
+    
+    # Resample to daily
+    daily = df.resample('D').agg({
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last'
+    }).dropna()
+    
+    # Resample to 4H
+    hours_4 = df.resample('4h').agg({
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last',
+        'volume': 'sum'
+    }).dropna()
+    
+    # Calculate swing high/low
+    daily['swing_high'] = (daily['high'] > daily['high'].shift(1)) & (daily['high'] > daily['high'].shift(-1))
+    daily['swing_low'] = (daily['low'] < daily['low'].shift(1)) & (daily['low'] < daily['low'].shift(-1))
+    
+    # Detect new day and sweeps
+    df['new_day'] = df.index.to_series().diff().dt.days > 0
+    df['sweep_high'] = (df['high'] > df['high'].shift(1)) & df['new_day']
+    df['sweep_low'] = (df['low'] < df['low'].shift(1)) & df['new_day']
+    
+    # Calculate FVG conditions
+    hours_4['fvg_bullish'] = hours_4['low'] > hours_4['high'].shift(2)
+    hours_4['fvg_bearish'] = hours_4['high'] < hours_4['low'].shift(2)
+    
+    # Trading window (9:30 AM - 4:00 PM EST)
+    df['trading_window'] = (df.index.hour >= 9) & (df.index.hour < 16)
+    
+    # Calculate filters
+    df['volume_filter'] = df['volume'] > df['volume'].rolling(20).mean()
+    df['atr_filter'] = df['high'] - df['low'] > df['high'] - df['low'].rolling(20).mean()
+    df['trend_filter'] = df['close'] > df['close'].rolling(50).mean()
+    
+    # Merge 4H data back to original timeframe
+    df = df.merge(hours_4[['fvg_bullish', 'fvg_bearish']], left_index=True, right_index=True, how='left')
+    
+    # Generate entries
+    entries = []
+    trade_num = 1
+    
+    for i in range(len(df)):
+        if df['trading_window'].iloc[i]:
+            if df['fvg_bullish'].iloc[i] and df['volume_filter'].iloc[i] and df['atr_filter'].iloc[i] and df['trend_filter'].iloc[i]:
+                entries.append({
+                    'trade_num': trade_num,
+                    'direction': 'long',
+                    'entry_ts': df['time'].iloc[i],
+                    'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                    'entry_price_guess': df['close'].iloc[i],
+                    'exit_ts': 0,
+                    'exit_time': '',
+                    'exit_price_guess': 0.0,
+                    'raw_price_a': df['close'].iloc[i],
+                    'raw_price_b': df['close'].iloc[i]
+                })
+                trade_num += 1
+            elif df['fvg_bearish'].iloc[i] and df['volume_filter'].iloc[i] and df['atr_filter'].iloc[i] and not df['trend_filter'].iloc[i]:
+                entries.append({
+                    'trade_num': trade_num,
+                    'direction': 'short',
+                    'entry_ts': df['time'].iloc[i],
+                    'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                    'entry_price_guess': df['close'].iloc[i],
+                    'exit_ts': 0,
+                    'exit_time': '',
+                    'exit_price_guess': 0.0,
+                    'raw_price_a': df['close'].iloc[i],
+                    'raw_price_b': df['close'].iloc[i]
+                })
+                trade_num += 1
+    
+    return entries
+
+    is_swing_high11 = dailyHigh21 < dailyHigh22 and dailyHigh11[3] < dailyHigh22 and dailyHigh11[4] < dailyHigh22
+    is_swing_low11 = dailyLow21 > dailyLow22 and dailyLow11[3] > dailyLow22 and dailyLow11[4] > dailyLow22
+    
+    return [is_swing_high11, is_swing_low11]
+
+I need to calculate swing highs and lows using the daily data. A swing high occurs when the current daily high is lower than the previous day's high, and the daily highs from 3 and 4 bars back are also lower than the previous day's high. Similarly, swing lows are detected when the current daily low is higher than the previous day's low, with the daily lows from 3 and 4 bars back also higher.
+
+After identifying these patterns, I track the most recent swing type and update it accordingly. I also incorporate sweep detection logic to identify when highs or lows are being swept, then apply multiple confirmation filters including volume thresholds, ATR-based volatility checks, and trend direction validation. Finally, I check for fair value gap conditions that would indicate institutional order flow imbalances. I need to reconsider the timeframe alignment issue. The 4H candles shouldn't automatically align with the 15min bars, so I need to be more careful about how I'm pulling the historical data. Looking at the security calls more closely, there's a mix of lookahead settings being used—the current 4H bar uses `lookahead_on`, but the historical bars use `lookahead_off`. This suggests the code is intentionally handling real-time vs historical data differently.
+
+For the Python conversion, I need to resample to 4H candles and carefully track which 4H candle each 15min bar belongs to, then pull the correct historical values from that perspective. The swing detection logic is already in place with the `swing_detection11()` function, so I can leverage that. I should also make sure to handle the `inp11`, `inp21`, and `inp31` inputs properly.
+
+The main challenge is recreating the timezone-based trading window logic in Python, and I need to account for how `sweptHigh` and `sweptLow` reset each day. The FVG conditions themselves are straightforward—bullish FVG checks if the current low exceeds the high from 2 candles back, and bearish FVG checks if the current high is below the low from 2 candles back.
+
+For the entries, I'm checking: confirmed bars only, FVG conditions met, the appropriate swing type for direction (bullish requires dailyLow swing, bearish requires dailyHigh swing), price has swept the prior day level, we're within the trading window, and the trend filter passes. There's also a volume filter `volfilt1` that might be relevant depending on the 4H volume context.
+
+Looking at the filter implementation, `volfilt1` compares the 4H volume against a 9-period moving average threshold of 1.5x, and `atrfilt1` checks if the range exceeds the ATR band. Both are optional toggles in the strategy.
+
+For the Python implementation, I need to resample the data to both daily and 4H timeframes. The daily aggregation captures the session's high/low boundaries, while the 4H candles align with the session structure. I'll calculate the 4H volume average and ATR dynamically, then rebuild these filters in Python logic. The London session windows also need to be reconstructed using pandas timezone handling.
+
+The implementation creates a timestamp column, sets it as the index, and resamples to daily and 4H intervals using appropriate aggregation functions. For the swing detection logic, I need to extract the previous two daily candles' high and low values to identify swing points and construct the FVG conditions properly. df_daily['dailyHigh22'] = df_daily['high'].shift(2)
+    df_daily['dailyLow21'] = df_daily['low'].shift(1)
+    df_daily['dailyLow22'] = df_daily['low'].shift(2)
+    
+    df_daily['is_swing_high11'] = (df_daily['dailyHigh21'] < df_daily['dailyHigh22']) & \
+                                  (df_daily['dailyHigh11'].shift(3) < df_daily['dailyHigh22']) & \
+                                  (df_daily['dailyHigh11'].shift(4) < df_daily['dailyHigh22'])
+    df_daily['is_swing_low11'] = (df_daily['dailyLow21'] > df_daily['dailyLow22']) & \
+                                 (df_daily['dailyLow11'].shift(3) > df_daily['dailyLow22']) & \
+                                 (df_daily['dailyLow11'].shift(4) > df_daily['dailyLow22'])
+    
+    # Determine last swing type
+    df_daily['lastSwingType11'] = 'none'
+    df_daily.loc[df_daily['is_swing_high11'], 'lastSwingType11'] = 'dailyHigh'
+    df_daily.loc[df_daily['is_swing_low11'], 'lastSwingType11'] = 'dailyLow'
+    df_daily['lastSwingType11'] = df_daily['lastSwingType11'].replace('none', np.nan).ffill().fillna('none')
+    
+    # Forward fill swing high/low prices
+    df_daily['last_swing_high11'] = df_daily['high'].where(df_daily['is_swing_high11']).ffill()
+    df_daily['last_swing_low11'] = df_daily['low'].where(df_daily['is_swing_low11']).ffill()
+    
+    return df, df_daily, df_4h
+
+I'm noticing a discrepancy in the variable naming that needs clarification. The `dailyHigh21` and `dailyLow21` variables are set to `high[1]` and `low[1]` respectively, which means they're pulling the previous day's high and low values. This creates a potential overlap or misalignment with how the daily data is being referenced elsewhere in the code.
+
+The swing detection logic compounds this complexity. The conditions checking whether the current swing high is below the one from two days back, along with checks on values from three and four days back, suggest there's a specific pattern being identified that requires careful alignment of these time-based references. The variables are being used inconsistently across different parts of the code, which makes tracking their actual values difficult. In `swing_detection11()`, `dailyHigh21` references `high[1]` from two days ago, but elsewhere it's treated as the previous day's high from the daily chart. This same naming issue appears with `dailyLow21`. The function also compares `dailyHigh11[3]` and `dailyHigh11[4]` without clarifying whether these are the same as `dailyHigh21` and `dailyHigh22` or if they're offset by additional shifts. The confusion stems from mixing `dailyHigh21` (which is `high[1]` from 2 days ago) with `dailyHigh11` (which is the current daily high). In the shift comparison, `dailyHigh11[3]` represents the daily high from 3 days ago, while `dailyHigh21` is already 2 days back—so the logic becomes harder to follow.
+
+Let me recalculate the actual values: if the current day is day 0, then `dailyHigh11[3]` pulls from 3 days ago and `dailyHigh22` pulls from 2 days ago, making the condition check whether the daily high from 3 days prior falls below the high from 2 days prior.
+
+Now I'll implement this in Python by first extracting the daily data and computing the necessary shifts.

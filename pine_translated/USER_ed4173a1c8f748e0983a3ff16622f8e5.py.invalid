@@ -1,0 +1,99 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    rangeBars = 200
+    rows = 50
+
+    # Calculate rolling high/low for the fixed range lookback
+    rHigh = df['high'].rolling(window=rangeBars).max()
+    rLow = df['low'].rolling(window=rangeBars).min()
+    
+    # hasRange condition: bar_index >= rangeBars AND high != low
+    hasRange = (df.index >= rangeBars) & (rHigh != rLow)
+
+    entries = []
+    trade_num = 1
+    prev_poc_price = None
+
+    for i in range(rangeBars, len(df)):
+        # Skip bars where range indicators are NaN or invalid
+        if not hasRange.iloc[i]:
+            prev_poc_price = None
+            continue
+
+        # Determine current range boundaries
+        current_rHigh = rHigh.iloc[i]
+        current_rLow = rLow.iloc[i]
+        
+        prRange = current_rHigh - current_rLow
+        if prRange == 0:
+            prev_poc_price = None
+            continue
+
+        step = prRange / rows
+        if step == 0.0:
+            step = 1e-9
+
+        # Get window data (last rangeBars bars ending at i)
+        start_idx = i - rangeBars + 1
+        end_idx = i + 1
+        window_close = df['close'].iloc[start_idx:end_idx].values
+        window_volume = df['volume'].iloc[start_idx:end_idx].values
+
+        # Bin volumes into price bins
+        # idx = floor((price - rLow) / step)
+        relative_price = window_close - current_rLow
+        indices = np.floor(relative_price / step).astype(int)
+        indices = np.clip(indices, 0, rows - 1)
+
+        vol_bins = np.zeros(rows)
+        np.add.at(vol_bins, indices, window_volume)
+
+        # Find Point of Control (POC) - price with max volume
+        poc_idx = np.argmax(vol_bins)
+        poc_price = current_rLow + (poc_idx + 0.5) * step
+
+        # Check for Crossover / Crossunder
+        close_i = df['close'].iloc[i]
+        close_im1 = df['close'].iloc[i-1]
+
+        if prev_poc_price is not None:
+            # Long entry: close crosses above POC
+            if close_i > poc_price and close_im1 <= prev_poc_price:
+                entries.append({
+                    'trade_num': trade_num,
+                    'direction': 'long',
+                    'entry_ts': int(df['time'].iloc[i]),
+                    'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                    'entry_price_guess': close_i,
+                    'exit_ts': 0,
+                    'exit_time': '',
+                    'exit_price_guess': 0.0,
+                    'raw_price_a': close_i,
+                    'raw_price_b': close_i
+                })
+                trade_num += 1
+
+            # Short entry: close crosses below POC
+            if close_i < poc_price and close_im1 >= prev_poc_price:
+                entries.append({
+                    'trade_num': trade_num,
+                    'direction': 'short',
+                    'entry_ts': int(df['time'].iloc[i]),
+                    'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                    'entry_price_guess': close_i,
+                    'exit_ts': 0,
+                    'exit

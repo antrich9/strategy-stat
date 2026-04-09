@@ -1,0 +1,1 @@
+def generate_entries(df: pd.DataFrame) -> list:

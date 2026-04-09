@@ -1,0 +1,4 @@
+bb = 20
+low_bb_plus_1 = df['low'].shift(bb+1)
+low_bb_minus_1 = df['low'].shift(bb-1)
+s_yLoc = low_bb_minus_1.where(low_bb_plus_1 > low_bb_minus_1, low_bb_plus_1)

@@ -1,0 +1,778 @@
+The user wants me to convert the Pine Script strategy into a Python function called `generate_entries`.
+
+Looking at the Pine Script:
+1. It uses Supertrend indicator with multiple timeframes (1D, 4H, 1H)
+2. Entry logic:
+   - Long entry when supertrend1D == 1
+   - Short entry when supertrend1D == -1
+3. The strategy uses `request.security` to get values from higher timeframes
+
+However, the user is providing a DataFrame with columns: time(int unix ts), open, high, low, close, volume. The data appears to be single timeframe data.
+
+The Pine Script uses:
+- `ta.supertrend(multiplier, atrLength)` which returns [trendDirection, _]
+- `supertrend1D = request.security(..., "D", supertrend(...))`
+- `supertrend4H = request.security(..., "240", supertrend(...))`
+- `supertrend1H = request.security(..., "60", supertrend(...))`
+
+In the entry conditions, it only uses `supertrend1D`:
+- `longCondition = (supertrend1D == 1)`
+- `shortCondition = (supertrend1D == -1)`
+
+The user wants me to translate this to Python. The challenge is that the DataFrame provided is likely single timeframe data, but the Pine Script uses multiple timeframes (1D, 4H, 1H).
+
+Looking at the function signature, the df only has time, open, high, low, close, volume columns. There's no indication of multiple timeframe data being provided.
+
+However, the user says "Convert the ENTRY LOGIC ONLY" and the entry logic only uses supertrend1D.
+
+Let me think about how to implement Supertrend in Python:
+- Supertrend is calculated based on ATR
+- The formula typically involves:
+  - Upper Band = (high + low) / 2 + multiplier * ATR
+  - Lower Band = (high + low) / 2 - multiplier * ATR
+  - Supertrend = 1 when close < Upper Band (downtrend), -1 when close > Lower Band (uptrend)
+
+Wait, I need to check the exact Pine Script supertrend implementation. In TradingView's built-in `ta.supertrend` function:
+- It returns [trendDirection, supertrendValue]
+- trendDirection: 1 for uptrend, -1 for downtrend
+
+Looking at the Pine Script more carefully:
+- `supertrend(_mult, _atrLength)` returns `[trendDirection, _]`
+- The entry conditions check `supertrend1D == 1` for long and `supertrend1D == -1` for short
+
+So the logic is:
+- Long when 1D Supertrend is in uptrend (value = 1)
+- Short when 1D Supertrend is in downtrend (value = -1)
+
+The user mentions:
+- Pine ta.atr(len): implement Wilder ATR manually
+- Pine ta.supertrend needs to be implemented
+
+Wait, the Pine Script uses `request.security` for multiple timeframes. But the user is providing a single timeframe DataFrame. This is a bit tricky.
+
+Let me re-read the requirements. The user says:
+- df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+- Rows sorted ascending by time (oldest first)
+
+And the Pine Script uses `request.security` to get 1D, 4H, 1H supertrend values. But if the user only provides single timeframe data, I cannot calculate higher timeframe indicators without resampling.
+
+However, looking at the entry conditions: `longCondition = (supertrend1D == 1)` and `shortCondition = (supertrend1D == -1)`, the strategy ONLY uses the 1D supertrend. So perhaps I need to calculate the 1D supertrend from the provided data, or the user expects me to simulate the multi-timeframe aspect somehow.
+
+But wait, if the data is, say, 1-minute data, then calculating 1D supertrend would require aggregating to daily timeframe first.
+
+Let me think about this differently. The user says "Convert the ENTRY LOGIC ONLY". The entry logic is:
+- Long when supertrend1D == 1
+- Short when supertrend1D == -1
+
+But I need to calculate supertrend. The Pine Script uses `ta.supertrend` which is a built-in TradingView function.
+
+I should implement a function that:
+1. Calculates ATR using Wilder's method
+2. Calculates Supertrend based on ATR
+3. Identifies entry points
+
+But there's a problem: the Pine Script uses `request.security` to get values from higher timeframes. If the input data is not in 1D timeframe, I cannot directly use `ta.supertrend`.
+
+Actually, looking at the Pine Script again:
+supertrend1D = request.security(syminfo.tickerid, "D", supertrend(multiplier, atrLength), lookahead=barmerge.lookahead_off)
+
+This means it's requesting daily supertrend values. If the chart is on a lower timeframe (like 1H or 1D), it gets the daily supertrend for each bar.
+
+For the Python conversion, if the user provides daily data, I can calculate the daily supertrend directly. If the user provides lower timeframe data, I would need to resample to daily first.
+
+But the user didn't specify the timeframe of the input data. Looking at the columns provided, it's generic OHLCV data.
+
+Let me assume the data is daily data, or I should make the function work with whatever timeframe is provided by calculating the indicators on the provided data.
+
+Actually, looking at the problem more carefully, the user wants me to translate the logic. The key is:
+1. Calculate supertrend (which is based on ATR)
+2. Long when supertrend == 1, Short when supertrend == -1
+
+The Pine Script uses `supertrend(_mult, _atrLength)` which calls `ta.supertrend(_mult, _atrLength)`.
+
+Let me implement the supertrend calculation manually in Python.
+
+Supertrend algorithm:
+1. Calculate True Range (TR)
+2. Calculate ATR using Wilder's smoothing
+3. Calculate Upper Band = (high + low) / 2 + multiplier * ATR
+4. Calculate Lower Band = (high + low) / 2 - multiplier * ATR
+5. Determine trend direction:
+   - If close > upper band, trend = -1 (downtrend)
+   - If close < lower band, trend = 1 (uptrend)
+   - Otherwise, keep previous trend
+
+Wait, I need to be careful about the exact implementation. Let me look up the standard supertrend implementation.
+
+Actually, in TradingView's `ta.supertrend`:
+- It returns [trendDirection, supertrendValue]
+- When trendDirection = 1, it's an uptrend
+- When trendDirection = -1, it's a downtrend
+
+The standard calculation:
+- Basic Upper Band = (High + Low) / 2 + Multiplier * ATR
+- Basic Lower Band = (High + Low) / 2 - Multiplier * ATR
+- Final Upper Band = MIN(Basic Upper Band, Previous Final Upper Band) if close < Previous Final Upper Band, else MAX(Basic Upper Band, Previous Final Upper Band)
+- Final Lower Band = MAX(Basic Lower Band, Previous Final Lower Band) if close > Previous Final Lower Band, else MIN(Basic Lower Band, Previous Final Lower Band)
+- Supertrend = Final Upper Band if close < Final Upper Band else Final Lower Band
+- Trend Direction = 1 if Supertrend < close else -1
+
+Actually, let me check the exact logic used by TradingView's ta.supertrend.
+
+From TradingView docs and various sources:
+True Range = max(high - low, abs(high - previous close), abs(low - previous close))
+ATR = Wilder EMA of True Range
+
+Upper Band = (High + Low) / 2 + Multiplier * ATR
+Lower Band = (High + Low) / 2 - Multiplier * ATR
+
+Final Upper Band = 
+    Upper Band if Upper Band < previous Final Upper Band or previous close > previous Final Upper Band
+    otherwise previous Final Upper Band
+
+Final Lower Band = 
+    Lower Band if Lower Band > previous Final Lower Band or previous close < previous Final Lower Band
+    otherwise previous Final Lower Band
+
+Supertrend = 
+    Final Upper Band if close < Final Lower Band
+    otherwise Final Lower Band
+
+Trend = 1 if Supertrend < close, -1 otherwise
+
+Wait, that doesn't look right. Let me reconsider.
+
+Actually, the typical implementation:
+- If close > Final Upper Band, trend = -1 (bearish)
+- If close < Final Lower Band, trend = 1 (bullish)
+
+Looking at the Pine Script provided:
+supertrend(_mult, _atrLength) =>
+    [trendDirection, _] = ta.supertrend(_mult, _atrLength)
+    trendDirection
+
+longCondition = (supertrend1D == 1) 
+shortCondition = (supertrend1D == -1)
+
+So:
+- Long when trendDirection == 1 (bullish)
+- Short when trendDirection == -1 (bearish)
+
+The standard ta.supertrend returns:
+- trendDirection = 1 for uptrend
+- trendDirection = -1 for downtrend
+
+Now, for the Python implementation, I need to:
+1. Implement Wilder ATR
+2. Implement Supertrend
+3. Apply the entry conditions
+
+But wait, the Pine Script uses `request.security` to get values from "D", "240", "60" timeframes. This means it's expecting data from different timeframes. However, the user is providing a single DataFrame.
+
+The most reasonable interpretation is that the user wants me to:
+1. Calculate the indicators on the provided data
+2. Or simulate the multi-timeframe aspect if possible
+
+Since the entry conditions only use `supertrend1D`, and `supertrend1D` is calculated on the "D" timeframe, I should probably:
+1. If the data is daily, calculate supertrend on the data
+2. If the data is not daily, I might need to resample or assume it's daily
+
+Given the constraints, I'll assume the provided DataFrame is daily data (or I should calculate the indicators on whatever data is provided).
+
+But there's another issue: the Pine Script explicitly uses `request.security` with `lookahead=barmerge.lookahead_off` to get historical values from higher timeframes. This is a specific Pine Script feature that doesn't translate directly to pandas.
+
+For the purpose of this conversion, I'll calculate the Supertrend on the provided data as if it were the 1D timeframe. This is the most straightforward interpretation.
+
+Parameters from Pine Script:
+- multiplier = 3.0
+- atrLength = 10
+- stopLossATR = 3.0 (not needed for entries)
+- riskRewardRatio = 1.0 (not needed for entries)
+
+So I need to:
+1. Calculate ATR(10) using Wilder's method
+2. Calculate Supertrend with multiplier 3.0
+3. Entry long when supertrend == 1
+4. Entry short when supertrend == -1
+
+Let me write the code:
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    multiplier = 3.0
+    atrLength = 10
+    
+    # Calculate True Range
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    
+    prev_close = close.shift(1)
+    
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    
+    # Calculate ATR using Wilder's method (exponential moving average with alpha = 1/period)
+    # Wilder ATR is essentially an EMA with alpha = 1/period
+    atr = tr.ewm(alpha=1.0/atrLength, adjust=False).mean()
+    
+    # Calculate Supertrend
+    hl2 = (high + low) / 2
+    upper_band = hl2 + multiplier * atr
+    lower_band = hl2 - multiplier * atr
+    
+    # Initialize trend
+    trend = pd.Series(np.zeros(len(df)), index=df.index)
+    final_upper = upper_band.copy()
+    final_lower = lower_band.copy()
+    
+    for i in range(1, len(df)):
+        if pd.isna(atr.iloc[i]):
+            trend.iloc[i] = 0
+            continue
+            
+        # Update final upper band
+        if upper_band.iloc[i] < final_upper.iloc[i-1] or close.iloc[i-1] > final_upper.iloc[i-1]:
+            final_upper.iloc[i] = upper_band.iloc[i]
+        else:
+            final_upper.iloc[i] = final_upper.iloc[i-1]
+        
+        # Update final lower band
+        if lower_band.iloc[i] > final_lower.iloc[i-1] or close.iloc[i-1] < final_lower.iloc[i-1]:
+            final_lower.iloc[i] = lower_band.iloc[i]
+        else:
+            final_lower.iloc[i] = final_lower.iloc[i-1]
+        
+        # Determine trend direction based on closing price relative to bands
+        if close.iloc[i] > final_upper.iloc[i]:
+            trend.iloc[i] = -1
+        elif close.iloc[i] < final_lower.iloc[i]:
+            trend.iloc[i] = 1
+        else:
+            trend.iloc[i] = trend.iloc[i-1]
+    
+    # Identify long and short entry signals
+    long_condition = (trend == 1) & (trend.shift(1) != 1)
+    short_condition = (trend == -1) & (trend.shift(1) != -1)
+    
+    # Generate entry list
+    entries = []
+    trade_num = 1
+    
+    for i in range(len(df)):
+        if long_condition.iloc[i]:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': int(df['time'].iloc[i]),
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i] / 1000, tz=timezone.utc).isoformat(),
+                'entry_price_guess': close.iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': close.iloc[i],
+                'raw_price_b': close.iloc[i]
+            })
+            trade_num += 1
+        elif short_condition.iloc[i]:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': int(df['time'].iloc[i]),
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i] / 1000, tz=timezone.utc).isoformat(),
+                'entry_price_guess': close.iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': close.iloc[i],
+                'raw_price_b': close.iloc[i]
+            })
+            trade_num += 1
+    
+    return entries
+
+Actually, wait. I need to be more careful. The user said:
+"Pine ta.atr(len): implement Wilder ATR manually"
+"Pine ta.rsi(src, len): implement Wilder RSI manually"
+
+So for ATR, I should implement it manually. Also, I need to check the crossover/crossunder logic.
+
+Actually, looking at the Pine Script again:
+longCondition = (supertrend1D == 1) 
+shortCondition = (supertrend1D == -1)
+
+These are simple conditions, not crossover conditions. So it's not checking if supertrend crosses above or below something, but rather if it equals a certain value.
+
+But in the context of a loop-based approach, I should probably check for the transition or just check the value at each bar.
+
+Actually, looking at the Pine Script more carefully:
+if (longCondition)
+    strategy.entry("Long", strategy.long)
+
+This executes on every bar where longCondition is true. So it's not a one-time signal, but rather generates an entry on each bar where the condition is met.
+
+Wait, that doesn't seem right for a backtesting strategy. Usually, you want to enter only once when the condition becomes true, not on every bar.
+
+But looking at the code, it seems like it's designed to enter on every bar where the condition is true. This might be intentional for a grid strategy or something, or it might be a mistake in the original code.
+
+However, for the purpose of this conversion, I should follow the logic exactly: enter when the condition is true.
+
+But actually, typically in Pine Script strategies, if you want to enter when a condition becomes true (not on every bar), you would use a variable to track the state or use `ta.crossover`.
+
+But in this case, there's no explicit crossover check. So I'll assume the user wants entries on every bar where the condition is true.
+
+Wait, let me reconsider. If the supertrend is 1 (bullish), and it stays 1 for multiple bars, should I enter on every bar? That seems unusual. But if that's what the Pine Script does, that's what I should replicate.
+
+Actually, looking at the code more carefully:
+if (longCondition)
+    ...
+    strategy.entry("Long", strategy.long)
+
+In Pine Script, `strategy.entry` can be called on multiple bars. If the condition is true on multiple consecutive bars, it will generate multiple entries unless there's position sizing or other constraints.
+
+But typically, you might want to use `strategy.entry` with `limit` or `stop` orders, or you might want to check if you're already in a position.
+
+However, the user said "Only replicate strategy.entry() calls. IGNORE strategy.exit(), strategy.close(), stop losses."
+
+So I should just generate an entry for each bar where the condition is true.
+
+But this could result in many entries. Let me think about this...
+
+Actually, looking at typical backtesting practices, usually you want to enter when the signal triggers, not on every bar. But without more context, I'll follow the literal interpretation of the Pine Script.
+
+However, I should probably check if the supertrend just turned to 1 (crossover from -1 to 1) rather than just being 1. But the Pine Script doesn't use `ta.crossover` here, so I'll stick with the literal interpretation.
+
+Actually, wait. Let me look at the plotshape lines:
+plotshape(series=longCondition, title="Long Signal", location=location.belowbar, color=color.green, style=shape.labelup, text="LONG")
+
+This plots a shape on every bar where longCondition is true. So it's consistent with the entry logic.
+
+Given this, I'll generate an entry for every bar where the condition is true.
+
+But there's another issue: what if the user provides non-daily data? The Pine Script explicitly uses `request.security(..., "D", ...)` to get daily supertrend.
+
+If I assume the provided data is daily, then I can calculate the supertrend directly. If the data is not daily, I would need to resample it to daily first.
+
+Given the constraints (using only pandas and numpy), I could resample the data to daily, calculate the indicators, and then map back to the original timeframe. But that's complicated.
+
+Alternatively, I'll assume the provided data is daily or should be treated as the 1D timeframe for the purpose of calculating supertrend.
+
+Actually, looking at the problem again, the user said "Convert the ENTRY LOGIC ONLY". The entry logic is based on `supertrend1D`. Since `supertrend1D` is calculated on the "D" timeframe, and the user provides a DataFrame, I'll assume the DataFrame represents the data at whatever timeframe the supertrend should be calculated on.
+
+Given the ambiguity, I'll make a reasonable assumption: the provided DataFrame is the data on which I should calculate the 1D supertrend.
+
+Let me write the code more carefully:
+
+def generate_entries(df: pd.DataFrame) -> list:
+    multiplier = 3.0
+    atrLength = 10
+    
+    # Calculate True Range
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    
+    # Previous close
+    prev_close = close.shift(1)
+    
+    # True Range
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    
+    # Wilder ATR
+    atr = tr.ewm(alpha=1.0/atrLength, adjust=False).mean()
+    
+    # Supertrend calculation
+    hl2 = (high + low) / 2
+    upper_band = hl2 + multiplier * atr
+    lower_band = hl2 - multiplier * atr
+    
+    # Initialize
+    trend = pd.Series(index=df.index, dtype=float)
+    final_upper = upper_band.copy()
+    final_lower = lower_band.copy()
+    
+    # First bar
+    if len(df) > 0:
+        trend.iloc[0] = 0  # neutral or unknown
+        # Initialize final bands
+        final_upper.iloc[0] = upper_band.iloc[0]
+        final_lower.iloc[0] = lower_band.iloc[0]
+    
+    # Iterate from second bar
+    for i in range(1, len(df)):
+        if pd.isna(atr.iloc[i]):
+            trend.iloc[i] = trend.iloc[i-1] if i > 0 else 0
+            final_upper.iloc[i] = final_upper.iloc[i-1] if i > 0 else upper_band.iloc[i]
+            final_lower.iloc[i] = final_lower.iloc[i-1] if i > 0 else lower_band.iloc[i]
+            continue
+            
+        # Update final upper band
+        if (upper_band.iloc[i] < final_upper.iloc[i-1]) or (close.iloc[i-1] > final_upper.iloc[i-1]):
+            final_upper.iloc[i] = upper_band.iloc[i]
+        else:
+            final_upper.iloc[i] = final_upper.iloc[i-1]
+        
+        # Update final lower band
+        if (lower_band.iloc[i] > final_lower.iloc[i-1]) or (close.iloc[i-1] < final_lower.iloc[i-1]):
+            final_lower.iloc[i] = lower_band.iloc[i]
+        else:
+            final_lower.iloc[i] = final_lower.iloc[i-1]
+        
+        # Determine trend
+        # trend = 1 (uptrend) when close < lower_band? No, that's not right.
+        # Actually, typical implementation:
+        # if close > final_upper: trend = -1 (downtrend)
+        # if close < final_lower: trend = 1 (uptrend)
+        # else: keep previous trend
+        
+        if close.iloc[i] > final_upper.iloc[i]:
+            trend.iloc[i] = -1
+        elif close.iloc[i] < final_lower.iloc[i]:
+            trend.iloc[i] = 1
+        else:
+            trend.iloc[i] = trend.iloc[i-1]
+    
+    # Entry conditions
+    # longCondition = (supertrend1D == 1)
+    # shortCondition = (supertrend1D == -1)
+    
+    # Generate entries
+    entries = []
+    trade_num = 1
+    
+    for i in range(len(df)):
+        if pd.isna(trend.iloc[i]):
+            continue
+        if trend.iloc[i] == 1:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': int(df['time'].iloc[i]),
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                'entry_price_guess': close.iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': close.iloc[i],
+                'raw_price_b': close.iloc[i]
+            })
+            trade_num += 1
+        elif trend.iloc[i] == -1:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': int(df['time'].iloc[i]),
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                'entry_price_guess': close.iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': close.iloc[i],
+                'raw_price_b': close.iloc[i]
+            })
+            trade_num += 1
+    
+    return entries
+
+Wait, I need to check the timestamp format. The user says:
+- df columns: time(int unix ts)
+
+So time is in unix timestamp (seconds). But then:
+datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat()
+
+If time is in seconds, this is correct. If it's in milliseconds, I need to divide by 1000.
+
+Looking at the Pine Script: `time` in Pine Script is usually in milliseconds. But the user says "int unix ts", which typically means seconds. However, it could be milliseconds.
+
+I'll assume it's seconds since that's the standard definition of unix timestamp, but I'll note that if it's milliseconds, the user would need to adjust.
+
+Actually, looking at the user's specification: "time(int unix ts)" - unix timestamp is traditionally seconds since epoch.
+
+So I'll use `datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat()`.
+
+Now, let me review the code to make sure it follows all the rules:
+1. Only replicate strategy.entry() calls - ✓ (only generating entries)
+2. Use ONLY pandas and numpy - ✓
+3. Pine ta.ema = ewm(span=len, adjust=False).mean() - N/A (using Wilder ATR which is EWM)
+4. Pine ta.sma = rolling(len).mean() - N/A
+5. Pine ta.rsi - N/A
+6. Pine ta.atr - implemented using Wilder ATR
+7. Pine ta.crossover - N/A (not using crossover)
+8. Pine ta.crossunder - N/A
+9. Pine source[1] = shift(1) - used prev_close = close.shift(1)
+10. Entry price = close - ✓
+11. trade_num starting at 1 - ✓
+12. entry_time = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat() - ✓
+13. raw_price_a = raw_price_b = entry_price_guess - ✓
+14. Build boolean Series for each condition - I'm using the trend Series directly
+15. Skip bars where required indicators are NaN - ✓ (checking pd.isna)
+16. If strategy only has long entries... - The strategy has both long and short - ✓
+17. If both... emit both - ✓
+
+One issue: I'm generating an entry on every bar where trend == 1 or -1. But looking at the Pine Script again, it uses `if (longCondition)` without checking if there was a previous condition. This means if the trend stays at 1 for multiple bars, it will generate multiple entries.
+
+In Pine Script, calling `strategy.entry` multiple times in a row without closing the position might add to the position (if using default parameters) or could be problematic.
+
+But for this conversion, I'll follow the literal logic: generate an entry on every bar where the condition is true.
+
+Actually, wait. I should double-check the supertrend calculation logic.
+
+From various sources, the TradingView `ta.supertrend` function works as follows:
+- It calculates the upper and lower bands
+- It determines the trend direction based on whether the close is above or below the bands
+- Specifically: 
+  - If close crosses above the lower band, it's an uptrend (trend = 1)
+  - If close crosses below the upper band, it's a downtrend (trend = -1)
+  - Otherwise, it maintains the previous trend
+
+But my implementation does:
+if close.iloc[i] > final_upper.iloc[i]:
+    trend.iloc[i] = -1
+elif close.iloc[i] < final_lower.iloc[i]:
+    trend.iloc[i] = 1
+else:
+    trend.iloc[i] = trend.iloc[i-1]
+
+This means:
+- If close > final_upper: downtrend (-1)
+- If close < final_lower: uptrend (1)
+- Otherwise: keep previous trend
+
+This seems correct for the standard supertrend implementation.
+
+But let me verify with the Pine Script behavior. In the Pine Script:
+supertrend(_mult, _atrLength) =>
+    [trendDirection, _] = ta.supertrend(_mult, _atrLength)
+    trendDirection
+
+And:
+longCondition = (supertrend1D == 1) 
+shortCondition = (supertrend1D == -1)
+
+So:
+- Long when trendDirection == 1 (uptrend)
+- Short when trendDirection == -1 (downtrend)
+
+My implementation should be correct.
+
+However, I need to make sure the first valid bar is handled correctly. In my code, I set trend.iloc[0] = 0. This means the first bar won't generate any entry, which is probably correct since we don't have previous data to establish a trend.
+
+Actually, looking at the typical implementation, the first bar might have a defined trend. But for simplicity and safety, starting with a neutral trend (0) makes sense.
+
+One more thing: the user mentioned "Build a boolean Series for each condition, then iterate with a for loop". I did not exactly build boolean Series for the conditions. I built a trend Series and then check if trend == 1 or -1.
+
+Actually, I could build:
+long_condition = (trend == 1)
+short_condition = (trend == -1)
+
+And then iterate. But my current approach works too.
+
+Let me reconsider the first bar handling. If the first bar has close < lower_band, then trend should be 1 (uptrend), and it should generate a long entry. But with my current code, trend.iloc[0] = 0, so it won't generate an entry.
+
+Actually, looking at the loop:
+for i in range(1, len(df)):
+
+I'm starting from index 1, so I'm not even calculating the trend for index 0 in the loop (except for the initial assignment).
+
+This is a problem. I should calculate the trend for all bars, starting from the first valid bar.
+
+Let me fix this:
+
+# Initialize
+trend = pd.Series(index=df.index, dtype=float)
+final_upper = upper_band.copy()
+final_lower = lower_band.copy()
+
+# Calculate trend for all bars
+for i in range(len(df)):
+    if i == 0:
+        # First bar: determine initial trend
+        if pd.isna(atr.iloc[i]):
+            trend.iloc[i] = 0
+        else:
+            # Initial trend determination
+            # This is tricky without previous data
+            # Typically, you might start with a default
+            # But let's set it to 0 (no trend) or try to determine from the bands
+            if close.iloc[i] < lower_band.iloc[i]:
+                trend.iloc[i] = 1
+            elif close.iloc[i] > upper_band.iloc[i]:
+                trend.iloc[i] = -1
+            else:
+                trend.iloc[i] = 0  # neutral
+            # Set final bands
+            final_upper.iloc[i] = upper_band.iloc[i]
+            final_lower.iloc[i] = lower_band.iloc[i]
+    else:
+        # Subsequent bars
+        if pd.isna(atr.iloc[i]):
+            trend.iloc[i] = trend.iloc[i-1]
+            final_upper.iloc[i] = final_upper.iloc[i-1]
+            final_lower.iloc[i] = final_lower.iloc[i-1]
+            continue
+            
+        # Update final upper band
+        if (upper_band.iloc[i] < final_upper.iloc[i-1]) or (close.iloc[i-1] > final_upper.iloc[i-1]):
+            final_upper.iloc[i] = upper_band.iloc[i]
+        else:
+            final_upper.iloc[i] = final_upper.iloc[i-1]
+        
+        # Update final lower band
+        if (lower_band.iloc[i] > final_lower.iloc[i-1]) or (close.iloc[i-1] < final_lower.iloc[i-1]):
+            final_lower.iloc[i] = lower_band.iloc[i]
+        else:
+            final_lower.iloc[i] = final_lower.iloc[i-1]
+        
+        # Determine trend
+        if close.iloc[i] > final_upper.iloc[i]:
+            trend.iloc[i] = -1
+        elif close.iloc[i] < final_lower.iloc[i]:
+            trend.iloc[i] = 1
+        else:
+            trend.iloc[i] = trend.iloc[i-1]
+
+Wait, the first bar logic might be incorrect. Let me reconsider.
+
+Actually, for the first bar:
+- If close < lower_band, we should be in an uptrend (trend = 1)
+- If close > upper_band, we should be in a downtrend (trend = -1)
+- Otherwise, we might be neutral or determine based on some default
+
+But this is an approximation. In real TradingView, the supertrend function handles this internally.
+
+For the purpose of this conversion, I'll assume the first valid bar can establish the trend, and then the loop continues from the second bar.
+
+Actually, let me simplify: I'll calculate the trend for all bars in the loop, starting from index 0.
+
+trend = pd.Series(np.nan, index=df.index)
+final_upper = pd.Series(np.nan, index=df.index)
+final_lower = pd.Series(np.nan, index=df.index)
+
+for i in range(len(df)):
+    if i == 0:
+        if pd.isna(atr.iloc[i]):
+            continue
+        final_upper.iloc[i] = upper_band.iloc[i]
+        final_lower.iloc[i] = lower_band.iloc[i]
+        if close.iloc[i] < final_lower.iloc[i]:
+            trend.iloc[i] = 1
+        elif close.iloc[i] > final_upper.iloc[i]:
+            trend.iloc[i] = -1
+        else:
+            trend.iloc[i] = 0  # No entry signal
+    else:
+        if pd.isna(atr.iloc[i]):
+            trend.iloc[i] = trend.iloc[i-1]
+            final_upper.iloc[i] = final_upper.iloc[i-1]
+            final_lower.iloc[i] = final_lower.iloc[i-1]
+            continue
+        
+        if (upper_band.iloc[i] < final_upper.iloc[i-1]) or (close.iloc[i-1] > final_upper.iloc[i-1]):
+            final_upper.iloc[i] = upper_band.iloc[i]
+        else:
+            final_upper.iloc[i] = final_upper.iloc[i-1]
+        
+        if (lower_band.iloc[i] > final_lower.iloc[i-1]) or (close.iloc[i-1] < final_lower.iloc[i-1]):
+            final_lower.iloc[i] = lower_band.iloc[i]
+        else:
+            final_lower.iloc[i] = final_lower.iloc[i-1]
+        
+        if close.iloc[i] > final_upper.iloc[i]:
+            trend.iloc[i] = -1
+        elif close.iloc[i] < final_lower.iloc[i]:
+            trend.iloc[i] = 1
+        else:
+            trend.iloc[i] = trend.iloc[i-1]
+
+This looks reasonable. Now, for entries, I'll generate an entry whenever trend == 1 (for long) or trend == -1 (for short).
+
+One issue: if trend stays at 1 for multiple bars, I'll generate multiple long entries. This matches the Pine Script behavior.
+
+But wait, looking at the Pine Script again:
+if (longCondition)
+    ...
+    strategy.entry("Long", strategy.long)
+
+If this is called on every bar, and there's no position management, it would keep adding to the position. This might be intentional (for a grid or DCA strategy) or it might be a bug in the original code.
+
+For the conversion, I'll follow the literal interpretation: generate an entry on every bar where the condition is true.
+
+Actually, I realize I should reconsider the entry logic. In many trading strategies, you only want to enter once when the signal appears, not on every bar. But without explicit crossover logic, I can't be sure.
+
+Let me look at the plotshape again:
+plotshape(series=longCondition, title="Long Signal", ...)
+
+This plots on every bar where longCondition is true. So it's consistent with entering on every bar.
+
+Given this, I'll proceed with generating entries on every bar.
+
+Now, let me write the final code.
+
+One more check: the user wants me to "Build a boolean Series for each condition". I haven't done that explicitly. Let me refactor to make it clearer:
+
+# Calculate indicators
+# ... atr and supertrend calculation ...
+
+# Build boolean conditions
+long_condition = (trend == 1)
+short_condition = (trend == -1)
+
+# Iterate
+for i in range(len(df)):
+    if long_condition.iloc[i]:
+        # add entry
+    elif short_condition.iloc[i]:
+        # add entry
+
+This follows the rule better.
+
+Also, I need to make sure I skip bars where indicators are NaN. I've handled that.
+
+Let me finalize the code:
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    multiplier = 3.0
+    atrLength = 10
+    
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    
+    # Calculate True Range
+    prev_close = close.shift(1)
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    
+    # Wilder ATR
+    atr = tr.ewm(alpha=1.0/atrLength, adjust=False).mean()
+    
+    # Supertrend calculation
+    hl2 = (high + low) / 2
+    upper_band = hl2 + multiplier * atr
+    lower_band = hl2 - multiplier * atr
+    
+    # Initialize arrays
+    trend = pd.Series(np.nan, index=df.index)
+    final_upper = pd.Series(np.nan, index=df.index)
+    final_lower = pd.Series(np.nan, index=df.index)
+    
+    for i in range(len(df)):
+        if i == 0:
+            if pd.isna(atr.iloc[i]):
+                continue
+            final_upper.iloc[i] = upper_band.iloc

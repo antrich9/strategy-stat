@@ -1,0 +1,5 @@
+df['day'] = pd.to_datetime(df['time'], unit='s').dt.date
+daily_agg = df.groupby('day').agg({'high': 'max', 'low': 'min'}).reset_index()
+daily_agg['day'] = pd.to_datetime(daily_agg['day'])
+daily_agg['prev_day_high'] = daily_agg['high'].shift(1)
+daily_agg['prev_day_low'] = daily_agg['low'].shift(1)

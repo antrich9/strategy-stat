@@ -1,0 +1,11 @@
+# Check if within trading windows
+    dt_utc = datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc)
+    dt_london = dt_utc.astimezone(london_tz)
+    hour = dt_london.hour
+    minute = dt_london.minute
+    
+    # Window 1: 07:45-11:45
+    in_window1 = (hour == 7 and minute >= 45) or (7 < hour < 11) or (hour == 11 and minute <= 45)
+    # Window 2: 14:00-14:45
+    in_window2 = hour == 14 and minute <= 45
+    in_trading_window = in_window1 or in_window2

@@ -1,0 +1,50 @@
+# Shift arrays to align with 15m bars
+# For bar i, shift_4h arrays give us the 4H values from 8 bars ago (previous 4H candle)
+shift_bfvg1 = bfvg1_4h.shift(8)
+shift_sfvg1 = sfvg1_4h.shift(8)
+
+# Also shift to get 4H candle identification
+shift_is_new_4h = is_new_4h.shift(8)
+
+# Initialize tracking
+last_fvg = 0  # 0 = none, 1 = bullish, -1 = bearish
+
+# Track entries
+entries = []
+trade_num = 1
+
+# Iterate through 15m bars
+for i in range(len(df)):
+    if is_new_4h[i]:  # New 4H candle
+        if bfvg1[i] and last_fvg == -1:
+            # Bullish sharp turn - LONG entry
+            entry_time = datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc)
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_time': entry_time,
+                'entry_price': df['close'].iloc[i]
+            })
+            trade_num += 1
+            last_fvg = 1
+        elif sfvg1[i] and last_fvg == 1:
+            # Bearish sharp turn - SHORT entry
+            entry_time = datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc)
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_time': entry_time,
+                'entry_price': df['close'].iloc[i]
+            })
+            trade_num += 1
+            last_fvg = -1
+        else:
+            # Update last_fvg based on current FVG
+            if bfvg1[i]:
+                last_fvg = 1
+            elif sfvg1[i]:
+                last_fvg = -1
+            else:
+                last_fvg = 0
+
+return entries

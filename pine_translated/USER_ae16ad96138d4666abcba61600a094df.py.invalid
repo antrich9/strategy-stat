@@ -1,0 +1,3 @@
+start_ts = int(datetime(2022, 1, 1, tzinfo=timezone.utc).timestamp())
+end_ts = int(datetime(2030, 1, 1, tzinfo=timezone.utc).timestamp())
+df = df[(df['time'] >= start_ts) & (df['time'] < end_ts)]

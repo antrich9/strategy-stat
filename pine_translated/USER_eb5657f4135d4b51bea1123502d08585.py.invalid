@@ -1,0 +1,6 @@
+pi = 2 * np.arcsin(1)
+ a1 = np.exp(-1.414 * pi / PeriodE2PSS)
+ b1 = 2 * a1 * np.cos(1.414 * pi / PeriodE2PSS)
+ coef2 = b1
+ coef3 = -a1 * a1
+ coef1 = 1 - coef2 - coef3

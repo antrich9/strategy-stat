@@ -1,0 +1,545 @@
+Let me analyze this Pine Script to understand the entry logic. This is a complex indicator with many components. Let me focus on identifying the actual `strategy.entry()` calls.
+
+Looking at the script, I can see several potential entry conditions:
+
+1. There's FVG (Fair Value Gap) detection logic with bullish and bearish FVGs
+2. There's bias logic with sweptLow, sweptHigh, brokeHigh, brokeLow
+3. There's order flow logic with bullish/bearish legs
+
+Let me look for actual `strategy.entry()` calls in this script. Scanning through... I don't see explicit `strategy.entry()` calls in the provided script. The script seems to be mostly about visualization and indicator logic.
+
+However, looking more carefully, I see:
+- `bfvg11` and `sfvg11` - bullish and bearish FVG conditions
+- The code mentions "POTENTIAL BUY" and "POTENTIAL SELL" labels
+- There's order flow logic
+
+The script appears to be an indicator rather than a complete strategy with explicit entry calls. But the user wants me to convert entry logic.
+
+Looking at the structure, the key entry conditions appear to be:
+
+1. When `bfvg11` (bullish FVG) is true and `lastSwingType11 == "dailyLow"`, this represents a bullish order flow leg
+2. When `sfvg11` (bearish FVG) is true and `lastSwingType11 == "dailyHigh"`, this represents a bearish order flow leg
+
+The conditions for bullish FVG:
+bfvg11 = dailyLow11 > dailyHigh22 and volfilt11 and atrfilt11 and locfiltb11
+
+Where:
+- `volfilt11 = inp1_11 ? volume[1] > ta.sma(volume, 9)*1.5 : true`
+- `atr211 = ta.atr(20) / 1.5`
+- `atrfilt11 = inp2_11 ? ((dailyLow22 - dailyHigh22 > atr211) or (dailyLow22 - dailyHigh11 > atr211)) : true`
+
+
+- `loc11 = ta.sma(close, 54)`
+- `loc211 = loc11 > loc11[1]`
+- `locfiltb11 = inp3_11 ? loc211 : true`
+
+The bearish FVG follows a similar pattern with opposing conditions and filters. Daily high and low data is pulled from the previous day and two days back, creating the reference points for gap detection and order flow analysis.
+
+For the sweep logic, I'm checking whether the current low has fallen below the prior day's low or if the current high exceeds the prior day's high. This sets up the bias determination—bullish when price sweeps the low then breaks above the high, bearish when it sweeps the high then breaks below the low. The bias resets to neutral at the start of each new day.
+
+Looking at the actual entry signals, I don't see explicit `strategy.entry()` calls in the script provided. The code appears to focus on plotting and visualization rather than trade execution. I need to identify what conditions would trigger entries based on the FVG logic and sweep analysis I've outlined. The `bfvg11` condition triggers when the daily low exceeds the prior day's high, combined with volume, ATR, and trend filters. Similarly, `sfvg11` triggers when the daily high falls below the prior day's low with matching filter conditions.
+
+For the bias sweep logic, bullish bias activates when the low sweeps below the prior day's low followed by a break above the prior day's high, while bearish bias occurs when the high sweeps above the prior day's high with a subsequent break below the prior day's low.
+
+However, I notice the script doesn't contain explicit `strategy.entry()` calls—it appears focused on visualization and pattern identification rather than actual trade execution. The entry logic I'm identifying would need to be constructed from these conditions if converting to a strategy format.
+
+The primary entry signals appear to be the fair value gap formations (bullish when `bfvg11` fires at daily lows, bearish when `sfvg11` fires at daily highs) combined with the sweep-based bias conditions. I should focus the conversion on these identified conditions rather than attempting to fabricate entry logic not present in the original code. The script identifies FVG patterns and order flow shifts without executing trades, so I'll extract the core detection logic. The main signals are the bullish and bearish FVG conditions—`bfvg11` and `sfvg11`—which trigger based on price sweeps of previous day levels combined with volume, ATR, and trend filters. I'll implement these detection mechanisms in Python, focusing on the sweep conditions, gap detection, and the supporting indicators that validate each signal. inp3_11 ? not loc211 : true
+
+For swing detection, I need to identify whether the middle candle forms a swing high or swing low by comparing the prior and subsequent daily candles. A swing high occurs when dailyHigh21 is lower than dailyHigh22 and the next two daily highs are also lower. A swing low follows the opposite pattern, requiring dailyLow21 to exceed dailyLow22 while the subsequent daily lows are higher.
+
+When a swing high forms, I update the last swing high to dailyHigh22 and mark the type as "dailyHigh". Similarly, a swing low triggers an update to the last swing low using dailyLow22. The key entry conditions then check for bullish FVG when the last swing type was a daily low, or bearish FVG when the last swing type was a daily high.
+
+For implementation, I'll need to handle the multi-timeframe data carefully since the provided dataframe only contains intrabar data. I can simulate daily lookups by referencing the previous bar's high and low values to approximate the prior day's levels, though this won't perfectly capture the exact daily open/close from the original logic.
+
+I'll focus on extracting the core entry logic from the Pine Script: identifying swing highs/lows using daily data references, detecting FVG patterns (bullish when price sweeps the low and breaks the high, bearish for the inverse), and determining bias direction. The main entry signals are the bullish and bearish FVG conditions combined with the appropriate swing type context.
+
+Now I need to carefully map the daily data references—the current day's high/low/close/open, the previous day's high/low/close/open, and the two-day-ago high/low—to ensure they're correctly translated into the Python structure using bar shift logic. (close, 54)` - 54-period SMA of close
+- `loc211 = loc11 > loc11[1]` - current moving average exceeds previous value
+- `locfiltb11 = inp3_11 ? loc211 : true` - applies trend filter if enabled
+- `locfilts11 = inp3_11 ? not loc211 : true` - opposite filter for short side
+
+For the FVG detection logic, I'm checking if the current daily low exceeds the high from two periods back, combined with volume, ATR, and trend filters enabled. The bearish counterpart mirrors this with the daily high falling below the low from two periods back, applying the same filter conditions.
+
+The bias determination follows a sequence: it resets at day boundaries, then shifts bullish when a low sweep precedes a high breach, bearish when a high sweep comes before a low breach, and maintains direction based on whether price remains below or above the prior day's extremes.
+
+For the Python implementation, I'll need to handle the data constraints—since the input DataFrame only provides intraday data without pre-aggregated daily values, I'll derive the necessary metrics from the available OHLCV. I'm focusing on extracting the core entry conditions: the bull FVGs that trigger when `bfvg11` and `lastSwingType11 == "dailyLow"` align, the bear FVGs from `sfvg11` and `lastSwingType11 == "dailyHigh"`, plus the bias-based entries using the sweep and break logic. The strategy primarily generates bullish entries through FVG patterns, with bearish conditions providing the opposite direction.
+
+I'll structure the implementation by computing the prior day's high and low from the DataFrame, calculating the supporting indicators like ATR and trend filters, then identifying swing points and FVG patterns to generate entry signals on each bar.
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    
+    # Input parameters (matching Pine Script defaults)
+    inp1_11 = False  # Volume Filter
+    inp2_11 = False  # ATR Filter
+    inp3_11 = False  # Trend Filter
+    
+    # Calculate daily high and low from provided data
+    # For single timeframe backtesting, we derive prev day high/low from available data
+    # This simulates request.security(syminfo.tickerid, "D", high[1])
+    
+    df = df.copy()
+    df['time'] = pd.to_datetime(df['time'], unit='s', utc=True)
+    df['day'] = df['time'].dt.date
+    
+    # Get previous day's high and low
+    daily_groups = df.groupby('day').agg({
+        'high': 'max',
+        'low': 'min'
+    })
+    daily_groups['prev_high'] = daily_groups['high'].shift(1)
+    daily_groups['prev_low'] = daily_groups['low'].shift(1)
+    
+    # Map back to original dataframe
+    df['prev_day_high'] = df['day'].map(daily_groups['prev_high'])
+    df['prev_day_low'] = df['day'].map(daily_groups['prev_low'])
+    
+    # ATR (Wilder)
+    def calc_atr(df, period=14):
+        high = df['high']
+        low = df['low']
+        prev_close = df['close'].shift(1)
+        
+        tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+        
+        atr = tr.ewm(alpha=1/period, adjust=False).mean()
+        return atr
+    
+    atr1 = calc_atr(df, 14)
+    atr211 = calc_atr(df, 20) / 1.5
+    
+    # Volume filter
+    df['vol_sma_9'] = df['volume'].rolling(9).mean()
+    volfilt11 = (df['volume'].shift(1) > df['vol_sma_9'].shift(1) * 1.5) if inp1_11 else pd.Series(True, index=df.index)
+    
+    # ATR filter
+    # Get 2-day ago daily data
+    df['prev2_day_high'] = daily_groups['high'].shift(2).reindex(df['day']).values
+    df['prev2_day_low'] = daily_groups['low'].shift(2).reindex(df['day']).values
+    
+    atrfilt11 = pd.Series(True, index=df.index)
+    if inp2_11:
+        cond1 = df['prev2_day_low'] - df['prev2_day_high'] > atr211
+        cond2 = df['prev2_day_low'] - df['prev_day_high'] > atr211
+        atrfilt11 = cond1 | cond2
+    
+    # Trend filter (SMA 54)
+    loc11 = df['close'].rolling(54).mean()
+    loc211_series = loc11 > loc11.shift(1)
+    locfiltb11 = loc211_series if inp3_11 else pd.Series(True, index=df.index)
+    locfilts11 = ~loc211_series if inp3_11 else pd.Series(True, index=df.index)
+    
+    # Fair Value Gap Detection
+    # For FVG detection, we need to reference daily data from prior bars
+    # Simulating: dailyLow11 > dailyHigh22 means current bar's daily low > 2-bar ago daily high
+    
+    # Create shifted versions for comparison
+    prev_day_high = df['prev_day_high']
+    prev_day_low = df['prev_day_low']
+    
+    # Get 2-bar ago daily high and low
+    daily_groups_shifted = df.groupby('day').agg({
+        'high': 'max',
+        'low': 'min'
+    }).shift(2)
+    
+    df['prev2_day_high_val'] = df['day'].map(daily_groups_shifted['high']).fillna(df['high'])
+    df['prev2_day_low_val'] = df['day'].map(daily_groups_shifted['low']).fillna(df['low'])
+    
+    # FVG conditions
+    # Bullish FVG: dailyLow11 > dailyHigh22
+    bull_fvg = df['low'] > df['prev2_day_high_val']
+    
+    # Bearish FVG: dailyHigh11 < dailyLow22
+    bear_fvg = df['high'] < df['prev2_day_low_val']
+    
+    bfvg11 = bull_fvg & volfilt11 & atrfilt11 & locfiltb11
+    sfvg11 = bear_fvg & volfilt11 & atrfilt11 & locfilts11
+    
+    # Swing detection (simplified)
+    # Detect when a swing high/low pattern forms on daily timeframe
+    # This requires comparing current, previous, and next day high/low values
+    
+    # For this implementation, we'll mark swings based on price action
+    # A swing high: current day high is lower than prev day high
+    # A swing low: current day low is higher than prev day low
+    
+    # Since we're working with intraday data and need to detect swing patterns,
+    # we can look for local extremes across multiple bars
+    
+    # For simplicity, we'll use a rolling window to detect potential swing points
+    window = 5
+    
+    # Detect swing highs (potential - when current bar's high is lower than surrounding highs)
+    df['swing_high_daily'] = (df['high'] < df['high'].shift(1)) & (df['high'] < df['high'].shift(-1))
+    
+    # Detect swing lows (potential - when current bar's low is higher than surrounding lows)
+    df['swing_low_daily'] = (df['low'] > df['low'].shift(1)) & (df['low'] > df['low'].shift(-1))
+    
+    # Track last swing high and low
+    df['last_swing_high'] = df['high'].where(df['swing_high_daily']).ffill()
+    df['last_swing_low'] = df['low'].where(df['swing_low_daily']).ffill()
+    
+    # Determine swing type based on which was most recent
+    df['lastSwingType'] = np.where(
+        df['last_swing_high'].notna() & (df['last_swing_high'] >= df['last_swing_low']),
+        'dailyHigh',
+        np.where(df['last_swing_low'].notna(), 'dailyLow', 'none')
+    )
+    
+    # Detect order flow based on bias and momentum shifts
+    # Bullish bias: price moving upward with support at daily low
+    # Bearish bias: price moving downward with resistance at daily high
+    
+    # Detect momentum shifts using EMA crossover
+    ema_fast = df['close'].ewm(span=9, adjust=False).mean()
+    ema_slow = df['close'].ewm(span=21, adjust=False).mean()
+    
+    # Bullish momentum: fast EMA crosses above slow EMA
+    bullish_momentum = (ema_fast > ema_slow) & (ema_fast.shift(1) <= ema_slow.shift(1))
+    
+    # Bearish momentum: fast EMA crosses below slow EMA
+    bearish_momentum = (ema_fast < ema_slow) & (ema_fast.shift(1) >= ema_slow.shift(1))
+    
+    # Order flow detection
+    bullish_order_flow = bullish_momentum & (df['close'] > df['open'])
+    bearish_order_flow = bearish_momentum & (df['close'] < df['open'])
+    
+    # Entry conditions
+    # Long entry: bullish bias + bullish order flow + support confirmed
+    df['long_entry'] = bullish_order_flow & (df['close'] > df['last_swing_low']) & (df['volume'] > df['vol_sma_9'])
+    
+    # Short entry: bearish bias + bearish order flow + resistance confirmed
+    df['short_entry'] = bearish_order_flow & (df['close'] < df['last_swing_high']) & (df['volume'] > df['vol_sma_9'])
+    
+    # Generate entry list
+    entries = []
+    
+    for idx, row in df.iterrows():
+        if row['long_entry']:
+            entries.append({
+                'trade_num': len(entries) + 1,
+                'direction': 'long',
+                'entry_idx': idx,
+                'entry_price': row['close'],
+                'entry_time': row['time']
+            })
+        elif row['short_entry']:
+            entries.append({
+                'trade_num': len(entries) + 1,
+                'direction': 'short',
+                'entry_idx': idx,
+                'entry_price': row['close'],
+                'entry_time': row['time']
+            })
+    
+    return entries
+
+# Example usage with sample data structure
+sample_df = pd.DataFrame({
+    'time': [1609459200, 1609545600, 1609632000],
+    'open': [100, 101, 102],
+    'high': [105, 106, 107],
+    'low': [98, 99, 100],
+    'close': [104, 105, 106],
+    'volume': [1000, 1500, 2000]
+})
+
+entries = generate_entries(sample_df)
+print(entries)
+
+I'm converting the Pine Script logic to Python, focusing on the key conditions that generate entries. The function needs to compute the FVG detection, bias sweeps, and identify when order flow shifts occur. Since the script uses daily-level logic with `dailyHigh11`, `dailyHigh22`, etc., I need to simulate this by grouping the input data by day and extracting the necessary values for each bar's calculation.
+
+The approach groups by date to get the daily high/low, then shifts these values to reference previous and prior days. The `bfvg11` condition checks if the current bar's daily low exceeds the 2-bar-ago daily high, while `sfvg11` checks the opposite relationship. These FVG flags then combine with other conditions like volume filters and trend alignment to determine valid entry signals. dailyLow22 and volfilt11 and atrfilt11 and locfilts11
+
+For swing detection, I need to identify local extremes using a rolling window approach. A swing high occurs when the current bar's high exceeds surrounding highs, while a swing low forms when the current bar's low drops below surrounding lows. I'll track these patterns across multiple bars and determine the most recent swing type to guide entry decisions.
+
+The FVG-based entries trigger when bullish or bearish fair value gaps align with the identified swing type—a bullish FVG when the last swing was a low, and a bearish FVG when it was a high. I should also incorporate bias-based entries that respond to sweep conditions and breakouts, which represent an alternative entry methodology within this system. df['low'] < df['prev_day_low'])
+    brokeHigh = (df['close'] > df['prev_day_high'])
+    brokeLow = (df['close'] < df['prev_day_low'])
+    
+    # Determine bias: bullish when sweeping low and breaking high, bearish when sweeping high and breaking low
+    bias = pd.Series(0, index=df.index)
+    bias = np.where(sweptLow & brokeHigh, 1,
+           np.where(sweptHigh & brokeLow, -1,
+           np.where(df['low'] < df['prev_day_low'], -1,
+           np.where(df['high'] > df['prev_day_high'], 1, 0))))
+    
+    # FVG entries aligned with swing structure
+    bull_fvg_entry = bfvg11 & (df['lastSwingType'] == 'dailyLow')
+    bear_fvg_entry = sfvg11 & (df['lastSwingType'] == 'dailyHigh')
+    
+    # Track trade state and generate entries
+    trade_num = 0
+    entries = []
+    is_long_open = False
+    is_short_open = False
+    last_bar_in_trade = False
+    
+    for i in range(len(df)):
+        if bull_fvg_entry.iloc[i] and not is_long_open:
+            trade_num += 1
+            entry_price = df['close'].iloc[i]
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': df['time'].iloc[i],
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                'entry_price_guess': entry_price,
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': entry_price,
+                'raw_price_b': entry_price
+            })
+            is_long_open = True
+            is_short_open = False
+        elif bear_fvg_entry.iloc[i] and not is_short_open:
+            trade_num += 1
+            entry_price = df['close'].iloc[i]
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': df['time'].iloc[i],
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                'entry_price_guess': entry_price,
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': entry_price,
+                'raw_price_b': entry_price
+            })
+            is_short_open = True
+            is_long_open = False
+    
+    return entries
+
+I need to make sure the function properly tracks which trades are active and doesn't generate overlapping entries for the same direction. The logic should only open a new position when there's no existing position in that direction.
+
+For the input parameters, I'll set them to their default values: Volume Filter off, ATR Filter off, Trend Filter off, and ATR Multiplier at 3.0. The logic should skip the initial bars where the required indicators (moving averages, etc.) haven't computed yet to avoid false signals. I'll structure the function to handle the conditions with these defaults in place.
+
+Now I need to implement the Wilder ATR calculation, which uses a smoothed moving average rather than a standard exponential moving average. The True Range is computed as the maximum of three values: the difference between high and low, the absolute difference between high and the previous close, and the absolute difference between low and the previous close. Then I'll apply Wilder's smoothing method across the specified period to get the final ATR value. _211 = calc_atr(df, 20) / 1.5
+    
+    # Volume filter
+    vol_sma_9 = df['volume'].rolling(9).mean()
+    volfilt11 = (df['volume'].shift(1) > vol_sma_9.shift(1) * 1.5) if inp1_11 else pd.Series(True, index=df.index)
+    
+    # ATR filter
+    atrfilt11 = pd.Series(True, index=df.index)
+    if inp2_11:
+        atrfilt11 = (df['dailyLow_2d_ago'] - df['dailyHigh_2d_ago'] > atr211) | (df['dailyLow_2d_ago'] - df['dailyHigh_1d_ago'] > atr211)
+    
+    # Trend filter
+    loc11 = df['close'].ewm(span=54, adjust=False).mean()
+    loc211 = loc11 > loc11.shift(1)
+    locfiltb11 = loc211 if inp3_11 else pd.Series(True, index=df.index)
+    locfilts11 = ~loc211 if inp3_11 else pd.Series(True, index=df.index)
+    
+    # FVG Detection: Bullish FVG occurs when current daily low exceeds the high from 2 days prior
+    bfvg11 = (df['dailyLow_today'] > df['dailyHigh_2d_ago']) & volfilt11 & atrfilt11 & locfiltb11
+    
+    # Bearish FVG detected when today's daily high falls below the low from 2 days prior
+    sfvg11 = (df['dailyHigh_today'] < df['dailyLow_2d_ago']) & volfilt11 & atrfilt11 & locfilts11
+    
+    # Swing detection identifies local extremes by comparing three consecutive daily candles
+    is_swing_high11 = (df['dailyHigh_1d_ago'] < df['dailyHigh_2d_ago']) & (df['dailyHigh_today'].shift(1) < df['dailyHigh_2d_ago']) & (df['dailyHigh_today'].shift(2) < df['dailyHigh_2d_ago'])
+    is_swing_low11 = (df['dailyLow_1d_ago'] > df['dailyLow_2d_ago']) & (df['dailyLow_today'].shift(1) > df['dailyLow_2d_ago']) & (df['dailyLow_today'].shift(2) > df['dailyLow_2d_ago'])
+    
+    df['last_swing_high'] = df['high'].where(is_swing_high11).ffill()
+    df['last_swing_low'] = df['low'].where(is_swing_low11).ffill()
+    
+    df['lastSwingType'] = 'none'
+    mask_high = is_swing_high11 | (df['lastSwingType'] == 'dailyHigh')
+    mask_low = is_swing_low11 | (df['lastSwingType'] == 'dailyLow')
+    df.loc[mask_high, 'lastSwingType'] = 'dailyHigh'
+    df.loc[mask_low, 'lastSwingType'] = 'dailyLow'
+    
+    # FVG entries align with the detected swing structure
+    bull_fvg_entry = bfvg11 & (df['lastSwingType'] == 'dailyLow')
+    bear_fvg_entry = sfvg11 & (df['lastSwingType'] == 'dailyHigh')
+    
+    trade_num = 0
+    entries = []
+    
+    for i in range(len(df)):
+        if bull_fvg_entry.iloc[i]:
+            trade_num += 1
+            entry_price = df['close'].iloc[i]
+            ts = int(df['time'].iloc[i])
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_
+
+ts': ts,
+                'entry_time': datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                'entry_price_guess': entry_price,
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': entry_price,
+                'raw_price_b': entry_price
+            })
+        elif bear_fvg_entry.iloc[i]:
+            trade_num += 1
+            entry_price = df['close'].iloc[i]
+            ts = int(df['time'].iloc[i])
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': ts,
+                'entry_time': datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                'entry_price_guess': entry_price,
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': entry_price,
+                'raw_price_b': entry_price
+            })
+    
+    return entries
+
+I need to review the logic more carefully. The Pine Script identifies swing highs and lows by comparing three consecutive daily highs and lows, then tracks the most recent one. When a swing high forms, it updates the last swing high value and marks it as a daily high. When a swing low forms, it updates the last swing low value and marks it as a daily low. The FVG detection then combines bullish FVG conditions with the last swing type being a daily low, and bearish FVG conditions with the last swing type being a daily high. When a swing high occurs, I set the last swing high and mark it as a daily high. For a swing low, I set the last swing low and mark it as a daily low. The FVG detection uses these swing types to filter entries—bullish FVGs only trigger when the last swing was a low, and bearish FVGs only when it was a high.
+
+I need to implement a function that identifies swing highs and lows in Python, then tracks which type occurred most recently to determine valid entry conditions. = pd.Series(False, index=df.index)
+    bear_fvg_entry = pd.Series(False, index=df.index)
+    
+    # Entry conditions
+    bull_fvg_entry = bull_fvg & (df['lastSwingType'] == 'dailyLow')
+    bear_fvg_entry = bear_fvg & (df['lastSwingType'] == 'dailyHigh')
+    
+    # Generate entries
+    trade_num = 0
+    entries = []
+    
+    for i in range(len(df)):
+        # Skip if any required indicator is NaN
+        if i < 5:  # Need enough bars for swing detection
+            continue
+        if pd.isna(df['sma_54'].iloc[i]) or pd.isna(volfilt11.iloc[i]):
+            continue
+            
+        if bull_fvg_entry.iloc[i]:
+            trade_num += 1
+            entry_price = df['close'].iloc[i]
+            ts = int(df['time'].iloc[i])
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': ts,
+                'entry_time': datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                'entry_price_guess': entry_price,
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': entry_price,
+                'raw_price_b': entry_price
+            })
+        elif bear_fvg_entry.iloc[i]:
+            trade_num += 1
+            entry_price = df['close'].iloc[i]
+            ts = int(df['time'].iloc[i])
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': ts,
+                'entry_time': datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                'entry_price_guess': entry_price,
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': entry_price,
+                'raw_price_b': entry_price
+            })
+    
+    return entries
+
+Now I'll iterate through the dataframe and apply the swing and FVG detection logic. For each bar, I check if the bullish or bearish FVG conditions align with the last swing type to generate entries, skipping any bars where indicators are incomplete. time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': entry_price,
+                'raw_price_b': entry_price
+            })
+    
+    return entries
+
+I'm noticing a flaw in my swing detection logic. The Pine Script uses future data when checking `dailyHigh11[3]` and `dailyHigh11[4]`, which wouldn't be available in real-time. I need to reconsider how to properly implement this without looking ahead.
+
+In Pine Script, `dailyHigh11[3]` refers to the daily high from three days ago relative to the current bar's daily context. To replicate this in Python, I should shift the daily high series by the appropriate number of days to align with the current bar's perspective.
+
+Using pandas, I can shift the daily data by 3 and 4 positions to get the values from three and four days prior respectively. This gives me the historical highs needed for the comparison, where a swing high forms when the current day's high is lower than the high from two days prior, and the highs from three and four days prior are also lower than that same reference point.
+
+The same logic applies to swing lows, but inverted—I need the low from one day ago to be higher than the low from two days ago, with the subsequent lows also exceeding that threshold. Since we're working with intraday data and grouping by day to create daily candles, the shift operations naturally correspond to the daily offset needed for this comparison.
+
+Now I need to handle the `dailyHigh11[3]` reference, which represents the daily high from three days ago. With the grouped daily data, a shift of 3 gives me exactly that value. The challenge is that within a single day, `dailyHigh11` represents today's high, so `dailyHigh11[3]` would be the high from three days prior. I'll need to account for this offset when extracting the historical high values for the swing detection logic.
+
+Let me check the logic flow: the condition `dailyHigh21 < dailyHigh22 and dailyHigh11[3] < dailyHigh22 and dailyHigh11[4] < dailyHigh22` identifies a swing high by comparing the middle day's high against the current day and two prior days. This pattern suggests we're looking for a local peak where the central high exceeds surrounding highs. I'll implement this by shifting the daily high series appropriately to capture the required historical values. dailyHigh22` = dailyGroups['high'].shift(2)
+
+So the shift amounts in Pine Script correspond to how many positions we need to look back. For Python, I can use `.shift()` with the same values. Looking at the actual Pine Script logic, it checks if the middle daily high is lower than the current one, then if the next two are also lower—a swing high pattern.
+
+For the implementation, I need to reference the grouped daily data and apply the appropriate shifts. The first daily high uses no shift (current day), the second uses shift(1) for the previous day, and the third uses shift(2) for two days back. This gives me the three consecutive daily highs needed to detect when the middle one forms a swing high. high22 = dailyGroups['high'].shift(2)  # 2 days ago
+dailyHigh23 = dailyGroups['high'].shift(3)  # 3 days ago
+dailyHigh24 = dailyGroups['high'].shift(4)  # 4 days ago
+
+The shift operation in pandas handles the offset correctly—each shift(1) moves back one day, so shift(3) and shift(4) capture the earlier periods needed. For the swing detection logic, I need to compare whether the middle day (1 day ago) is lower than the current day, then verify that both 3 and 4 days ago are also lower than that same reference point.
+
+Similarly for the low: dailyLow21 (1 day ago) should be higher than dailyLow22 (2 days ago), and dailyLow23 and dailyLow24 should also exceed dailyLow22 to confirm a swing low pattern.
+
+Now I'll implement this by calculating the daily high and low series with appropriate shifts. For the Wilder ATR calculation, I need to compute the true range first by taking the maximum of the high-low difference, the absolute difference between high and previous close, and the absolute difference between low and previous close. Then I'll apply Wilder's smoothing method, which uses a weighted average where the first value is a simple average and subsequent values incorporate the previous smoothed result multiplied by the smoothing factor.
+
+For the FVG detection, I'm checking if the current day's low exceeds the high from two days ago, which would indicate a bullish gap. I'll also need to calculate volume and ATR filters to validate the signal, along with trend detection using a simple moving average to determine market direction. swing_high = pd.Series(False, index=df.index)
+    is_swing_low = pd.Series(False, index=df.index)
+    
+    for i in range(5, len(dailyGroups)):
+        curr_high = dailyGroups['high'].iloc[i]
+        prev_high = dailyGroups['high'].iloc[i-1]
+        two_ago_high = dailyGroups['high'].iloc[i-2]
+        three_ago_high = dailyGroups['high'].iloc[i-3]
+        four_ago_high = dailyGroups['high'].iloc[i-4]
+        
+        if prev_high < two_ago_high and three_ago_high < two_ago_high and four_ago_high < two_ago_high:
+            is_swing_high.iloc[i] = True
+            
+        curr_low = dailyGroups['low'].iloc[i]
+        prev_low = dailyGroups['low'].iloc[i-1]
+        two_ago_low = dailyGroups['low'].iloc[i-2]
+        three_ago_low = dailyGroups['low'].iloc[i-3]
+        four_ago_low = dailyGroups['low'].iloc[i-4]
+        
+        if prev_low > two_ago_low and three_ago_low > two_ago_low and four_ago_low > two_ago_low:
+            is_swing_low.iloc[i] = True
+    
+    dailyGroups['is_swing_high'] = is_swing_high
+    dailyGroups['is_swing_low'] = is_swing_low
+    
+    df['is_swing_high_daily'] = df['day'].map(dailyGroups['is_swing_high'])
+    df['is_swing_low_daily'] = df['day'].map(dailyGroups['is_swing_low'])
+    
+    last_swing_high = df['high'].where(df['is_swing_high_daily']).ffill()
+    last_swing_low = df['low'].where(df['is_swing_low_daily']).ffill()
+    
+    df['lastSwingType'] = 'none'
+    df.loc[df['is_swing_high_daily'], 'lastSwingType'] = 'dailyHigh'
+    df.loc[df['is_swing_low_daily'], 'lastSwingType'] = 'dailyLow'
+    df['lastSwingType'] = df['lastSwingType'].ffill().fillna('none')
+    
+    bull_fvg_entry = bull_fvg & (df['lastSwingType'] == 'dailyLow')
+    bear_fvg_entry = bear_fvg & (df['lastSwingType'] == 'dailyHigh')
+    
+    trade_num = 0
+    entries = []
+    
+    for i in range(len(df

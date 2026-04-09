@@ -1,0 +1,8 @@
+df['dt'] = pd.to_datetime(df['time'], unit='s', utc=True)
+df['day'] = df['dt'].dt.date
+daily_high = df.groupby('day')['high'].max()
+daily_low = df.groupby('day')['low'].min()
+daily_high_shifted = daily_high.shift(1)
+daily_low_shifted = daily_low.shift(1)
+df['prev_day_high'] = df['day'].map(daily_high_shifted)
+df['prev_day_low'] = df['day'].map(daily_low_shifted)

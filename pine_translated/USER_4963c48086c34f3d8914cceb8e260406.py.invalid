@@ -1,0 +1,448 @@
+The Pine Script has a lot of code for drawing boxes, lines, and labels that are purely visual. I need to extract the ENTRY LOGIC ONLY.
+
+Looking at the Pine Script, I need to find `strategy.entry()` calls. Let me scan through the code...
+
+I see many parts but I need to find where entries are actually defined. The provided code snippet seems incomplete (cut off at the end) and doesn't show `strategy.entry()` calls explicitly in the visible portion. However, based on the code structure and context:
+
+1. The script is about detecting Fair Value Gaps (FVG) with bullish and bearish conditions
+2. There's logic for "Breakaway FVG" and "Weak 3rd Candle FVG"  
+3. The conditions `bfvg` and `sfvg` are defined:
+   - `bfvg = low > high[2] and volfilt and atrfilt and locfiltb`
+   - `sfvg = high < low[2] and volfilt and atrfilt and locfilts`
+
+But I don't see explicit `strategy.entry()` calls in the visible portion. Let me look more carefully...
+
+Wait, the code shows conditions but the entry logic might be implied or I need to infer from the conditions. Since the user asked to convert "ENTRY LOGIC ONLY", I need to find where entries would be triggered.
+
+Looking at the conditions:
+- `bfvg` (bullish FVG): `low > high[2] and volfilt and atrfilt and locfiltb`
+- `sfvg` (bearish FVG): `high < low[2] and volfilt and atrfilt and locfilts`
+
+These are the entry conditions. Additionally:
+- `obUp` and `obDown` for order block detection
+- `fvgUp` and `fvgDown` for FVG detection
+- `flagpdh` and `flagpdl` for previous day high/low sweep
+
+
+- The entry conditions combine FVG detection with order block sweeps and previous day high/low sweeps. I need to extract the actual entry logic from the conditions rather than searching for explicit `strategy.entry()` calls.
+
+The entry logic appears to be:
+- Long entries when FVG is bullish and either the previous day's low is swept or an order block forms
+- Short entries when FVG is bearish and either the previous day's high is swept or an order block forms
+
+Let me reconsider the order block logic more carefully. The conditions `obUp` and `obDown` check for specific candle patterns where the current close is above the previous high (for bullish) or below the previous low (for bearish), combined with directional candle movements. I need to clarify the indexing logic here. In Pine Script, `isUp(1)` checks if the candle at index 1 was bullish, but the function uses the current bar's close and open values to determine direction. So `isObUp(1)` is evaluating: whether the previous bar was bearish AND the current bar is bullish AND the current close exceeds the previous bar's high. This represents a bullish engulfing pattern where the current candle closes above the prior candle's high.
+
+For the FVG detection, I'm looking at whether the current candle's low is above the high from two bars back, indicating a gap up. The bullish FVG condition (`fvgUp`) checks this gap, while the bearish version (`fvgDown`) would check if the high is below the low from two bars back.
+
+The script also tracks previous day high and low levels, detecting when these are swept. However, the main `strategy.entry()` calls aren't immediately visible in what was provided, so I should focus on the core entry conditions present in the code: the FVG patterns combined with volume, ATR, and trend filters, along with the order block and liquidity sweep signals. isFvgDown(0)` = high < low[2]
+
+So the stacked OB + FVG detection identifies when both an order block and fair value gap align—bullishly when a bearish candle precedes a bullish one with the current close above the prior high, combined with a bullish FVG; bearishly when a bullish candle precedes a bearish one with the current close below the prior low, combined with a bearish FVG.
+
+The entry conditions build on this by requiring the FVG filter (`bfvg` or `sfvg`), the stacked confirmation (`(obUp and fvgUp)` or `(obDown and fvgDown)`), and the liquidity sweep requirement (`flagpdh` or `flagpdl`). This creates a confluence of momentum, structural confirmation, and liquidity grab for entries.
+
+The logic resets each day, clearing the sweep flags and entry states at the open. For short entries, the additional `waitingForShortEntry1` flag controls the timing, allowing the condition to be evaluated only after the setup completes.
+
+The bullish entry requires three simultaneous conditions: a bullish FVG, an upward order block pattern, and the prior day's low having been swept. Similarly, the bearish short entry needs a bearish FVG, downward order block confirmation, and the prior day's high swept. I should implement this logic in Python to capture these entry signals.
+
+I'll need to calculate the required technical indicators first—the ATR-based volatility filter, the 54-period moving average for trend direction, and the volume threshold. Then I can check each condition using the pandas data provided. , low_prev = high_prev = NaN (data not available in df)
+- Use close price as entry price
+- Set raw_price_a and raw_price_b to entry_price_guess
+- Use flagpdh, flagpdl logic (but without prev day high/low from security, we may need to approximate or skip)
+- Actually, in Pine Script it's using `request.security` which gets previous day high/low. In backtesting Python, I don't have access to that directly, but I can calculate it from the data.
+
+Let me calculate previous day high and low:
+df['date'] = pd.to_datetime(df['time'], unit='s').dt.date
+df['prev_day_high'] = df.groupby('date')['high'].transform('max').shift(1)
+df['prev_day_low'] = df.groupby('date')['low'].transform('min').shift(1)
+
+But this has a problem - when grouping by current date, I'm looking ahead. I need to shift the high/low back by one day instead. The previous day's high should be the maximum of the day before, and similarly for the low.
+
+df['day'] = pd.to_datetime(df['time'], unit='s').dt.date
+df['day_high'] = df.groupby('day')['high'].transform('max')
+df['day_low'] = df.groupby('day')['low'].transform('min')
+
+# Previous day high/low
+df['prev_day_high'] = df['day_high'].shift(1)
+df['prev_day_low'] = df['day_low'].shift(1)
+
+This way, when I'm at day N, `prev_day_high` and `prev_day_low` contain the values from day N-1, which is what we need for the logic.
+
+For the first few days, these will be NaN since there's no prior day data. The condition checking `flagpdh` and `flagpdl` should handle this - those flags only get set to true when price sweeps the previous day's high or low, which requires that the previous day values exist. So if both are NaN, the condition fails naturally.
+
+Now I'll write the implementation. I need to compute ATR first, then identify when price crosses above or below the prior day's levels. I'll track the sweep flags by checking if price closes above the previous day's high (setting `flagpdh`) or below the previous day's low (setting `flagpdl`). The sweep condition is true when price exceeds the prior day high or drops below the prior day low.
+
+Next, I'll calculate the 54-bar simple moving average to determine trend direction, then apply the volume filter requiring average volume to be 1.5 times the 9-bar SMA. The bullish and bearish FVG conditions will then use these filters along with the ATR and trend components to generate entry signals.
+
+For the entry conditions, I need bullish FVG signals combined with an upward-order-block pattern that also respects the daily high sweep flag, along with bearish FVG signals paired with a downward-order-block pattern that meets the daily low sweep requirement.
+
+The function then iterates through the DataFrame to identify entry points, skipping any bars with missing indicator values and only triggering long or short positions based on whether the corresponding entry conditions are met. For each valid entry, it records the trade number, direction, timestamp, entry price, and placeholder values for exit information.
+
+After completing the iteration, the function returns the list of entries. However, I should verify the day change logic in the Pine Script—when `isNewDay` is true, the flags reset. The issue is that `flagpdh` and `flagpdl` need to maintain their state across bars until a new day begins, but in the current approach these flags recalculate based on daily values each time, which would cause them to reset prematurely rather than persisting until the next day boundary.
+
+The correct approach tracks whether the previous day's high or low has been swept. These flags should only reset when a new day is detected, then get set to true once their respective sweep conditions occur and stay true until the next reset. I need to implement this as stateful tracking rather than recalculating from scratch each bar. and the flag persists across bars within that day. If the current bar's close exceeds the previous day's high, the flag gets set to true. Similarly, if close drops below the previous day's low, the other flag activates.
+
+Now I need to translate this logic into Python. I'll iterate through the DataFrame, checking for new days and resetting the flags accordingly. At each bar, I'll evaluate whether the close price has swept the prior day's high or low, updating the flags as needed. The flags will carry forward from their previous state until a new day triggers a reset. .shift(1) > df['prev_day_low'].shift(1))
+
+Wait, I need to reconsider this. The flag should only reset when `isNewDay` is true, not on every bar. If I shift the conditions, I'm resetting the flags on every bar, which breaks the logic. Let me think through a concrete example: when day changes from Day 1 to Day 2, `isNewDay` becomes true and resets the flags. Then on Day 2 bars, the flag can only change based on whether the high sweeps occurred. So I need to track the previous bar's flag state and only update it when the sweep condition is met, while preserving the state across bars within the same day. I'm conflating the bar-level sweep check with the flag-setting logic. The condition `close > prevDayHigh` triggers the flag update at the current bar, but I need to ensure I'm comparing against the correct prior day's high. Let me trace through the logic more carefully—the shift operations should align each bar with its corresponding previous day's high value, but I should verify the index offsets are correct before proceeding. previous bar's close is <= prev_day_high shifted. But that means I'm comparing current close against the previous day's high using shifted values. If prev_day_high shifted is NaN on the first day, then I need to handle that case.
+
+Let me reconsider the logic: when I shift prev_day_high by 1, at position i I'm looking at the high from two days ago. That seems wrong - I should be comparing today's close against yesterday's high directly. The issue is that prev_day_high already represents yesterday's high at each position, so shifting it gives me the high from two days prior.
+
+For the crossover detection, I need to check if today's close crosses above yesterday's high. Using shift(1) on prev_day_high would give me the high from two days ago, which isn't what I want. I should use the unshifted prev_day_high directly, comparing close > prev_day_high with close shifted <= prev_day_high shifted. The first condition uses the current bar's prev_day_high, and the second condition uses the previous bar's prev_day_high (shifted). This gives me the crossover detection I need.
+
+Now checking for crossunders: close < prev_day_low compared against the previous bar's close >= prev_day_low (shifted). Similarly, this captures when price drops below the previous day's low.
+
+With these crossover conditions established, I can now identify entries by checking if the bullish flag is active and the bull_fvg condition is met, then entering long positions accordingly. df['bull_fvg'] = (df['low'] > df['high'].shift(2)) & vol_filt & atr_filt & loc_filtb
+    
+    # Bearish FVG
+    bear_fvg = (df['high'] < df['low'].shift(2)) & vol_filt & atr_filt & loc_filts
+    
+    # Previous day high/low sweep detection
+    # flagpdh: close > prev_day_high (sweep previous day high)
+    # flagpdl: close < prev_day_low (sweep previous day low)
+    flagpdh = (df['close'] > df['prev_day_high']) & (df['close'].shift(1) <= df['prev_day_high'].shift(1))
+    flagpdl = (df['close'] < df['prev_day_low']) & (df['close'].shift(1) >= df['prev_day_low'].shift(1))
+    
+    # Long entries trigger when price sweeps the previous day's low and bullish FVG conditions align
+    long_cond = flagpdl & bull_fvg & ob_up & fvg_up
+    
+    # Short entries trigger when price sweeps the previous day's high and bearish FVG conditions align
+    short_cond = flagpdh & bear_fvg & ob_down & fvg_down
+    
+    # Iterate through each bar to capture entry signals
+    trade_num = 1
+    entries = []
+    
+    for i in range(len(df)):
+        if loc_filtb.iloc[i] and bull_fvg.iloc[i] and flagpdl.iloc[i]:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': int(df['time'].iloc[i]),
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                'entry_price_guess': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': df['close'].iloc[i],
+                'raw_price_b': df['close'].iloc[i]
+            })
+            trade_num += 1
+        elif loc_filts.iloc[i] and bear_fvg.iloc[i] and flagpdh.iloc[i]:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': int(df['time'].iloc[i]),
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                'entry_price_guess': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': df['close'].iloc[i],
+                'raw_price_b': df['close'].iloc[i]
+            })
+            trade_num += 1
+    
+    return entries
+
+I need to be careful about NaN values in the shift operations—shift(1) and shift(2) will produce NaN at the start of the series. The conditions using these shifted values will evaluate to False when NaN is present, which handles the edge cases correctly. I should also verify that prev_day_high and prev_day_low are properly defined in the main function before using them in the conditions. I'm settling on a cleaner approach to identify day boundaries. I'll create a 'day' column and use that to detect when the day changes, which will help me properly reset flags at the start of each new day.
+
+The plan is to identify daily high/low values first, then track when those values shift to indicate a new trading day. This way I can apply the prev_day_high and prev_day_low correctly to each bar based on which day it belongs to.
+
+df['day'] = pd.to_datetime(df['time'], unit='s').dt.date
+
+df['day_high'] = df.groupby('day')['high'].transform('max')
+df['day_low'] = df.groupby('day')['low'].transform('min')
+
+df['prev_day_high'] = df['day_high'].shift(1)
+df['prev_day_low'] = df['day_low'].shift(1)
+
+df['is_new_day'] = df['day'] != df['day'].shift(1)
+
+Now I can use the is_new_day flag to properly reset flags at the start of each day, ensuring I only apply previous day's values when actually needed. low[2] and volfilt and atrfilt and locfilts" which triggers on candle close, so I should evaluate conditions at the current bar (i) using available data. Since I'm iterating through rows in order and `close[i]` is already defined, checking conditions at position i works fine.
+
+The sweep detection logic using crossover functions should handle the timing correctly. For tracking `flagpdh` and `flagpdl` across bars, I can compute them as boolean Series each iteration rather than maintaining state. I'll add NaN checks when evaluating conditions to skip invalid entries. One thing to verify: the "Weak 3rd Candle FVG" condition needs to be part of the entry logic.
+
+The script includes two distinct FVG types—Breakaway FVGs and Weak 3rd Candle FVGs—each with their own box plotting logic. Top_ImbXBway and Bottom_ImbXBAway define the weak 3rd candle conditions. However, the entry conditions only reference bfvg and sfvg, which don't explicitly differentiate between these FVG types, so I need to determine if the entry logic should incorporate both FVG categories or just one. Looking at the entry conditions:
+if bfvg and (obUp and fvgUp) and flagpdl
+    ...
+if sfvg and (obDown and fvgDown) and flagpdh
+    ...
+
+The `bfvg` and `sfvg` conditions already capture the key FVG patterns—`bfvg` identifies bullish fair value gaps with low above the prior high, while `sfvg` detects bearish ones with high below the prior low. These indicators effectively distinguish the trading setups without needing separate conditions for each FVG variant.
+
+The Top_ImbXBway and Bottom_ImbXBAway patterns appear to be supplementary visualizations for weak third candle scenarios rather than core entry requirements. Since the main strategy relies on `bfvg` and `sfvg`, I'll keep the implementation focused on those primary conditions.
+
+For the logic flow, I need to establish daily high/low tracking first, then layer in the FVG detection with volume and trend filters. The entry signals depend on both the FVG confirmation and order block validation before executing trades.
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    df = df.copy()
+    
+    # Day identification
+    df['day'] = pd.to_datetime(df['time'], unit='s').dt.date
+    
+    # Previous day high/low
+    df['day_high'] = df.groupby('day')['high'].transform('max')
+    df['day_low'] = df.groupby('day')['low'].transform('min')
+    df['prev_day_high'] = df['day_high'].shift(1)
+    df['prev_day_low'] = df['day_low'].shift(1)
+    
+    # New day flag for resetting conditions
+    df['is_new_day'] = df['day'] != df['day'].shift(1)
+    
+    # Volume filter: requires 1.5x the 9-bar SMA
+    vol_filt = (df['volume'].shift(1) > df['volume'].rolling(9).mean() * 1.5)
+    
+    # ATR calculation using Wilder's method
+    tr1 = df['high'] - df['low']
+    tr2 = (df['high'] - df['close'].shift(1)).abs()
+    tr3 = (df['low'] - df['close'].shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/20, adjust=False).mean() / 1.5
+    
+    # ATR filter for identifying significant moves
+    atrfilt = ((df['low'] - df['high'].shift(2) > atr) | (df['low'].shift(2) - df['high'] > atr))
+    
+    # Moving average for trend detection
+    ma = df['close'].ewm(span=54, adjust=False).mean()
+    loc2 = ma > ma.shift(1)
+    locfiltb = loc2
+    locfilts = ~loc2
+    
+    # Bullish FVG conditions
+    bull_fvg = (df['low'] > df['high'].shift(2)) & vol_filt & atrfilt & locfiltb
+    bear_fvg = (df['high'] < df['low'].shift(2)) & vol_filt & atrfilt & locfilts
+    
+    # Detect when price sweeps previous day high/low levels
+    flagpdh = (df['close'] > df['prev_day_high']) & (df['close'].shift(1) <= df['prev_day_high'].shift(1))
+    flagpdl = (df['close'] < df['prev_day_low']) & (df['close'].shift(1) >= df['prev_day_low'].shift(1))
+    
+    # Order block detection using candlestick patterns
+    is_up = df['close'] > df['open']
+    is_down = df['close'] < df['open']
+    ob_up = is_down.shift(1) & is_up & (df['close'] > df['high'].shift(1))
+    ob_down = is_up.shift(1) & is_down & (df['close'] < df['low'].shift(1))
+    fvg_up = df['low'] > df['high'].shift(2)
+    fvg_down = df['high'] < df['low'].shift(2)
+    
+    # Entry signals based on FVG and order block confirmation
+    long_cond = bull_fvg & ob_up & fvg_up & flagpdl
+    short_cond = bear_fvg & ob_down & fvg_down & flagpdh
+    
+    # Process daily data and extract trade entries
+    entries = []
+    trade_num = 1
+    
+    for i in range(len(df)):
+        # Skip bars with insufficient data or missing indicators
+        if i < 2:
+            continue
+        if pd.isna(df['prev_day_high'].iloc[i]) or pd.isna(df['prev_day_low'].iloc[i]):
+            continue
+        if locfiltb.iloc[i] and bull_fvg.iloc[i] and flagpdl.iloc[i]:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': int(df['time'].iloc[i]),
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                'entry_price_guess': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': df['close'].iloc[i],
+                'raw_price_b': df['close'].iloc[i]
+            })
+            trade_num += 1
+        elif loc_filts[i] and bear_fvg[i] and flagpdh[i]:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': int(df['time'].iloc[i]),
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                'entry_price_guess': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': df['close'].iloc[i],
+                'raw_price_b': df['close'].iloc[i]
+            })
+            trade_num += 1
+    
+    return entries
+
+I need to handle the NaN values from the shift operations properly. When shift(1) is called, the first row becomes NaN, and shift(2) makes the first two rows NaN. This means my boolean conditions will also contain NaN values, which could cause issues in the entry logic. I should ensure these NaN values are handled correctly so they don't trigger unexpected entries. Looking at the conditions more carefully, `bull_fvg` involves `df['high'].shift(2)` which produces NaN at index 0, so the boolean result becomes NaN rather than False. In Python, `True & NaN` evaluates to NaN, not False, which would cause issues in conditional logic. The flagpdh condition similarly uses shifted values that could introduce NaN. Since NaN values are falsy in boolean contexts, my conditions should safely evaluate to False when NaN is present. To be more explicit about handling these edge cases, I could add explicit NaN checks, though the current approach should work as intended since `np.nan & True` returns NaN, which is falsy.
+
+For the bullish order block detection, I'm checking if the previous candle was bearish, the current candle is bullish, and the current close exceeds the previous high. The downshift(1) creates NaN for the first row, making ob_up[0] evaluate to False. The same logic applies to the bearish version where I'm looking for the opposite candle pattern.
+
+For the fair value gap detection, I need to verify the gap between the current candle and the one two periods back. Since indexing in pandas uses shift() where index 0 represents the current candle, shift(2) pulls from two periods ago. This means fvg_up checks whether the current low exceeds the high from two candles prior. , 3, 4, 5]
+
+For fvg_up, I need low[0] > high[2]. Since we're at index 2, that means comparing the current bar's low against the high from 4 bars back. low[2] and high[2] represent the current bar's values, so low[2] > high[0] checks if the current low exceeds the bar from 4 periods ago—which translates to df['low'] > df['high'].shift(4) in pandas. This matches the Pine Script condition of low > high[2]. I'm checking that the FVG condition requires index i's low to exceed index (i-2)'s high. Using shift(2) on the high column gives us the value from 2 bars back, so the condition df['low'] > df['high'].shift(2) correctly captures this logic. For the bullish FVG detection, this confirms we need the current bar's low to be above the high from two periods prior.
+
+The order block detection needs additional verification. In the Pine Script, isUp(1) checks if close[1] > open[1], which means the previous bar closed higher than it opened. The isObUp function combines this with the current bar's bullish candle (close > open) and the close being above the prior bar's high. This ensures we're identifying a candle that both closed above the previous high and shows bullish intent in its formation.
+
+The bullish FVG condition checks if low > high[2], meaning the current bar's low exceeds the high from two bars back—a gap up scenario. The entry triggers when all three align: the breakaway gap forms, the order block pattern completes, and the previous day's low gets swept. Since this checks close against prevDayLow, it activates on bar close rather than requiring intrabar price action.
+
+For the crossover detection, I need to verify close exceeds prevDayHigh while the prior close stayed below it. The implementation uses shifted values to compare current and previous closes against the previous day's high, catching the moment price breaks above that level.
+
+Now checking for the inverse case where price drops below the previous day's low. The logic mirrors the first condition but looks for close crossing under prevDayLow from above. Once both conditions are defined, I can move forward with the implementation.
+
+For the SMA calculation, using `transform` with the `max` function ensures I'm capturing the highest value across each day's group. However, I need to be careful with the shift operation—shifting after computing day highs means the previous day's high gets moved to the current row, which is correct for the entry logic.
+
+df['day_high'] = df.groupby('day')['high'].transform('max')
+df['prev_day_high'] = df['day_high'].shift(1)
+
+This approach ensures `prev_day_high` aligns with the right day. Now I can proceed with the full implementation.
+
+The function handles both long and short entries based on engulfing patterns and trend confirmation. It iterates through the dataframe, checking for valid entry conditions (ensuring required indicators aren't NaN), then records trade details including timestamp, entry price, and placeholder exit values before returning the complete entries list. The shift operations handle edge cases properly—when prev_day_high or prev_day_low is NaN at the start, the conditions naturally evaluate to False, so no special handling is needed beyond the existing NaN checks.
+
+One thing to verify: the flagpdh and flagpdl checks reference shifted values from prev_day columns. Since prev_day_high and prev_day_low contain NaN for the first row, and close[1] is NaN at index 0, the conditions correctly return False there. At index 1, prev_day_high[1] holds the value from index 0, and prev_day_high.shift(1)[1] retrieves the previous day's high from the prior position, so the logic works as intended for detecting crossovers.
+
+The volume filter also accounts for potential NaN values—volume.shift(1)[0] being NaN causes vol_filt[0] to be NaN, which the subsequent conditions handle gracefully.
+
+Now I'll write out the complete function with proper imports at the top.
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    df = df.copy()
+    
+    # Day identification
+    df['day'] = pd.to_datetime(df['time'], unit='s').dt.date
+    
+    # Previous day high/low
+    df['day_high'] = df.groupby('day')['high'].transform('max')
+    df['day_low'] = df.groupby('day')['low'].transform('min')
+    df['prev_day_high'] = df['day_high'].shift(1)
+    df['prev_day_low'] = df['day_low'].shift(1)
+    
+    # Volume filter
+    vol_filt = df['volume'].shift(1) > df['volume'].rolling(9).mean() * 1.5
+    
+    # ATR filter using Wilder's method
+    tr1 = df['high'] - df['low']
+    tr2 = (df['high'] - df['close'].shift(1)).abs()
+    tr3 = (df['low'] - df['close'].shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/20, adjust=False).mean() / 1.5
+    atrfilt = (df['low'] - df['high'].shift(2) > atr) | (df['low'].shift(2) - df['high'] > atr)
+    
+    # Trend filter using EMA
+    ma = df['close'].ewm(span=54, adjust=False).mean()
+    loc2 = ma > ma.shift(1)
+    locfiltb = loc2
+    locfilts = ~loc2
+    
+    # Fair value gap detection
+    bull_fvg = (df['low'] > df['high'].shift(2)) & vol_filt & atrfilt & locfiltb
+    bear_fvg = (df['high'] < df['low'].shift(2)) & vol_filt & atrfilt & locfilts
+    
+    # Detect sweeps of previous day high/low
+    flagpdh = (df['close'] > df['prev_day_high']) & (df['close'].shift(1) <= df['prev_day_high'].shift(1))
+    flagpdl = (df['close'] < df['prev_day_low']) & (df['close'].shift(1) >= df['prev_day_low'].shift(1))
+    
+    # Order block and FVG conditions
+    is_up = df['close'] > df['open']
+    is_down = df['close'] < df['open']
+    ob_up = is_down.shift(1) & is_up & (df['close'] > df['high'].shift(1))
+    ob_down = is_up.shift(1) & is_down & (df['close'] < df['low'].shift(1))
+    fvg_up = df['low'] > df['high'].shift(2)
+    fvg_down = df['high'] < df['low'].shift(2)
+    
+    # Entry signals
+    long_cond = bull_fvg & ob_up & fvg_up & flagpdl
+    short_cond = bear_fvg & ob_down & fvg_down & flagpdh
+    
+    # Generate entries
+    entries = []
+    trade_num = 1
+    
+    for i in range(len(df)):
+        if i < 2:
+            continue
+        if pd.isna(df['prev_day_high'].iloc[i]) or pd.isna(df['prev_day_low'].iloc[i]):
+            continue
+        if locfiltb.iloc[i] and bull_fvg.iloc[i] and flagpdl.iloc[i]:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': int(df['time'].iloc[i]),
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                'entry_price_guess': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': df['close'].iloc[i],
+                'raw_price_b': df['close'].iloc[i]
+            })
+            trade_num += 1
+        elif loc_filts[i] and bear_fvg[i] and flagpdh[i]:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': int(df['time'].iloc[i]),
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                'entry_price_guess': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': df['close'].iloc[i],
+                'raw_price_b': df['close'].iloc[i]
+            })
+            trade_num += 1
+    
+    return entries
+
+I'm realizing there's a naming conflict—I have `locfilts` as a Series but also try to use it as a scalar in the loop. The conditions are getting messy with multiple overlapping checks for bullish and bearish setups. I need to simplify by properly combining the entry conditions rather than duplicating logic across branches. The conditions in my loop are duplicating what's already in long_cond and short_cond, so I should use those directly. I also notice loc_filts needs to be locfilts to match the Series name I defined earlier.
+
+Here's the cleaned up version:
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    df = df.copy()
+    
+    # Day identification
+    df['day'] = pd.to_datetime(df['time'], unit='s').dt.date
+    
+    # Previous day high/low
+    df['day_high'] = df.groupby('day')['high'].transform('max')
+    df['day_low'] = df.groupby('day')['low'].transform('min')
+    df['prev_day_high'] = df['day_high'].shift(1)
+    df['prev_day_low'] = df['day_low'].shift(1)
+    
+    # Volume filter
+    vol_filt = df['volume'].shift(1) > df['volume'].rolling(9).mean() * 1.5
+    
+    # ATR filter using Wilder's method
+    tr1 = df['high'] - df['low']
+    tr2 = (df['high'] - df['close'].shift(1)).abs()
+    tr3 = (df['low'] - df['close'].shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/20, adjust=False).mean() / 1.5
+    atrfilt = (df['low'] - df['high'].shift(2) > atr) | (df['low'].shift(2) - df['high'] > atr)
+    
+    # Trend filter using EMA
+    ma = df['close'].ewm(span=54, adjust=False).mean()
+    loc2 = ma > ma.shift(1)
+    locfiltb = loc2
+    locfilts = ~loc2
+    
+    # Fair value gap detection
+    bull_fvg = (df['low'] > df['high'].shift(2)) & vol_filt & atrfilt & locfiltb
+    bear_fvg = (df['high'] < df['low'].shift(2)) & vol_filt & atrfilt & locfilts
+    
+    # Detect sweeps of previous day high/low
+    flagpdh = (df['close'] > df['prev_day_high']) & (df['close'].shift(1) <= df['prev_day_high'].shift(1))
+    flagpdl = (df['close'] < df['prev_day_low']) & (df['close'].shift(1) >= df['prev_day_low'].shift(1))
+    
+    # Order block and FVG detection
+    is_up = df['close'] > df['open']
+    is_down = df['close'] < df['open']
+    ob_up = is_down.shift(

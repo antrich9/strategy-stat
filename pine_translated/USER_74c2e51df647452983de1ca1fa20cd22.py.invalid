@@ -1,0 +1,125 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    Generate entries based on breakout and retest strategy.
+    """
+    # Extract OHLCV data
+    close = df['close']
+    high = df['high']
+    low = df['low']
+    
+    # Calculate Wilder's ATR (14-period default)
+    def wilder_atr(df, period=14):
+        high = df['high']
+        low = df['low']
+        close = df['close']
+        
+        tr1 = high - low
+        tr2 = abs(high - close.shift(1))
+        tr3 = abs(low - close.shift(1))
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        
+        atr = tr.rolling(window=period).sum() / period
+        
+        for i in range(period, len(atr)):
+            atr.iloc[i] = (atr.iloc[i-1] * (period - 1) + tr.iloc[i]) / period
+        
+        return atr
+    
+    atr = wilder_atr(df, 14)
+    
+    # Calculate ROC (Rate of Change)
+    def roc(series, length):
+        return ((series - series.shift(length)) / series.shift(length)) * 100
+    
+    # Calculate Coppock Curve
+    roc1 = roc(close, 14)
+    roc2 = roc(close, 11)
+    
+    # WMA calculation
+    def wma(series, length):
+        weights = np.arange(1, length + 1)
+        return series.rolling(length).apply(lambda x: np.sum(weights * x) / np.sum(weights), raw=True)
+    
+    coppock_curve = wma(roc1 + roc2, 10)
+    
+    # Identify pivot points using rolling window of 20 periods to find local extrema
+    def pivot_high(series, left, right):
+        return series.rolling(window=left+right+1).max().shift(-right)
+    
+    def pivot_low(series, left, right):
+        return series.rolling(window=left+right+1).min().shift(-right)
+    
+    bb = 20
+    ph = pivot_high(high, bb, bb)
+    pl = pivot_low(low, bb, bb)
+    
+    # Detect when pivot levels change
+    ph_change = ph.diff().fillna(0) != 0
+    pl_change = pl.diff().fillna(0) != 0
+    
+    # Track support and resistance levels
+    s_yLoc = np.where(low.shift(bb + 1) > low.shift(bb - 1), low.shift(bb - 1), low.shift(bb + 1))
+    r_yLoc = np.where(high.shift(bb + 1) > high.shift(bb - 1), high.shift(bb + 1), high.shift(bb - 1))
+    
+    # Establish box boundaries for support and resistance zones
+    sBot = np.where(ph_change, pl, np.nan)
+    sTop = sBot  # Using same value initially
+    rBot = np.where(pl_change, ph, np.nan)
+    rTop = rBot  # Using same value initially
+    
+    # Calculate breakout and breakdown conditions when price crosses outside the boxes
+    co = close > rTop
+    cu = close < sBot
+    
+    # Track when breakouts first occur
+    sBreak = cu & (sBot.notna())
+    rBreak = co & (rBot.notna())
+    
+    sBreak = sBreak.groupby(sBreak.ne(sBreak.shift()).cumsum()).transform('first')
+    rBreak = rBreak.groupby(rBreak.ne(rBreak.shift()).cumsum()).transform('first')
+    
+    # Retest conditions: price returns to test the support/resistance level after breakout
+    input_retSince = 2
+    input_retValid = 2
+    
+    sBreak_since = sBreak.replace(False, np.nan).bfill()
+    rBreak_since = rBreak.replace(False, np.nan).bfill()
+    
+    bars_since_sBreak = pd.Series(np.arange(len(df)), index=df.index).where(sBreak_since.notna()).bfill()
+    bars_since_rBreak = pd.Series(np.arange(len(df)), index=df.index).where(rBreak_since.notna()).bfill()
+    
+    s1 = (bars_since_sBreak > input_retSince) & (high >= sTop) & (close <= sBot)
+    s2 = (bars_since_sBreak > input_retSince) & (high >= sTop) & (close >= sBot) & (close <= sTop)
+    s3 = (bars_since_sBreak > input_retSince) & (high >= sBot) & (high <= sTop)
+    s4 = (bars_since_sBreak > input_retSince) & (high >= sBot) & (high <= sTop) & (close < sBot)
+    
+    r1 = (bars_since_rBreak > input_retSince) & (low <= rBot) & (close >= rTop)
+    r2 = (bars_since_rBreak > input_retSince) & (low <= rBot) & (close <= rTop) & (close >= rBot)
+    r3 = (bars_since_rBreak > input_retSince) & (low <= rTop) & (low >= rBot)
+    r4 = (bars_since_rBreak > input_retSince) & (low <= rTop) & (low >= rBot) & (close > rTop)
+    
+    sRetActive = s1 | s2 | s3 | s4
+    rRetActive = r1 | r2 | r3 | r4
+
+The code calculates how many bars have passed since the initial breakouts, then defines four retest conditions for both support and resistance. These conditions check if price is revisiting the broken level after sufficient time has elapsed. The retest flags combine all four scenarios for each direction. I need to track when sBreak and rBreak change to reset the state properly. When pl changes and sBreak is NA, I should clear the sBox and set sBreak to NA. Similarly, when ph changes and rBreak is NA, clear rBox and reset rBreak.
+
+For the retest logic, I need a function that checks conditions and returns valid retests, tracking when retests occur and managing the label array accordingly. The retOccurred variable should track whether a valid retest has happened within the specified window.
+
+The key insight is that entries fire when retValid is true—meaning we have an active retest within the valid range and no retest has occurred yet at that level. I need to implement this logic carefully, respecting the input settings for retest detection and ensuring the state variables reset properly when pivot points change. The retest conditions check if price action meets the criteria after a valid breakout, with specific requirements like price touching support or resistance levels within a certain number of bars. The breakout itself triggers when price closes below support or above resistance, establishing the initial directional bias before the retest confirms the entry. I need to reconsider how Wilder RSI works versus standard RSI. Wilder's method applies exponential smoothing where each new value factors in the previous smoothed value, creating a different calculation than simple rolling windows. For ATR specifically, I should use Wilder's smoothing approach: start with a simple moving average for the first N periods, then apply the smoothing formula (previous ATR × (N-1) + current TR) / N for subsequent values. Let me verify this implementation handles the smoothing correctly across the entire series. True Range with Wilder smoothing
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    tr.iloc[0] = high.iloc[0] - low.iloc[0]
+    
+    atr = tr.ewm(alpha=1/period, adjust=False).mean()
+    
+    return atr
+
+I'll use the ewm function with Wilder's smoothing formula to calculate ATR properly. This handles the recursive smoothing across the entire series.
+
+For the coppock curve, I need to compute rate of change using ROC, then apply weighted moving average:

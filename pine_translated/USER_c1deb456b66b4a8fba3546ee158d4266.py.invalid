@@ -1,0 +1,570 @@
+The Pine Script strategy is quite complex with:
+1. Choppiness Index calculation
+2. Support/Resistance box breakout and retest detection
+3. Long and short entries based on breakouts and retests
+
+I need to translate the entry logic only. Looking at the Pine Script:
+
+1. Long entries seem to be triggered by:
+   - When support breaks (cu - crossunder close < sBot)
+   - Or more specifically, looking at the conditions...
+
+Actually, looking more carefully at the code:
+- The strategy uses breakout detection (cu for support break, co for resistance break)
+- Then retest events (rRetValid, sRetValid)
+- Entries seem to be:
+  - Long when support breaks and then retests
+  - Short when resistance breaks and then retests
+
+But wait, I need to find the actual `strategy.entry()` calls. Let me re-read...
+
+The provided Pine Script doesn't show the actual `strategy.entry()` calls in the snippet provided. The snippet ends mid-sentence:
+alertcondition(ta.barssince(na(rBreak)) == 1, 'Res
+
+This is incomplete. However, based on the context:
+- `cu` = crossunder (support breakout/down)
+- `co` = crossover (resistance breakout/up)
+- `sRetValid` = support retest valid
+- `rRetValid` = resistance retest valid
+
+Typically in such strategies:
+- Long entry: when support breaks and then price retests (sRetValid)
+- Short entry: when resistance breaks and then price retests (rRetValid)
+
+But I need to be careful. The strategy parameter `tradeDirection` can be "Long", "Short", or "Both".
+
+Let me assume the entries are:
+- Long: sRetValid (retest after support breakout)
+- Short: rRetValid (retest after resistance breakout)
+
+Actually, looking at the code structure:
+- sBreak is set when support breaks (cu)
+- rBreak is set when resistance breaks (co)
+- Then retests are detected after these breaks
+
+The entry logic likely triggers when a retest is confirmed after a breakout.
+
+Let me reconstruct the entry logic:
+1. Calculate Choppiness Index (ci)
+2. Calculate ATR (atr)
+3. Detect pivot points (pl, ph)
+4. Calculate support/resistance boxes
+5. Detect breakouts (cu, co)
+6. Detect retests (s1, s2, s3, s4 for support; r1, r2, r3, r4 for resistance)
+7. Entry when retest is valid (sRetValid for long, rRetValid for short)
+
+The entry conditions based on retestEvent function:
+- Long entry: when sRetValid is true (retest after support breakout)
+- Short entry: when rRetValid is true (retest after resistance breakout)
+
+But I need to be careful about the direction filtering based on tradeDirection input.
+
+Let me write the Python code:
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+    Returns list of dicts with entry signals.
+    """
+    # Initialize result list
+    results = []
+    
+    # Strategy parameters (hardcoded from Pine Script)
+    atrLength = 14
+    ciLength = 14
+    ciThreshold = 61.8
+    lengthMD = 10
+    atrMultiplier = 1.5
+    input_lookback = 20
+    input_retSince = 2
+    input_retValid = 2
+    input_repType = 'On'  # Can be 'On', 'Off: Candle Confirmation', 'Off: High & Low'
+    
+    # Calculate basic indicators
+    # Choppiness Index calculation
+    high_low_range = df['high'].rolling(window=ciLength).max() - df['low'].rolling(window=ciLength).min()
+    atr_sum = df['close'].diff().abs().rolling(window=ciLength).mean()
+    ci = 100 * np.log10(atr_sum / high_low_range) / np.log10(ciLength)
+    
+    # ATR calculation
+    tr = np.maximum(
+        df['high'] - df['low'],
+        np.maximum(
+            abs(df['high'] - df['close'].shift(1)),
+            abs(df['low'] - df['close'].shift(1))
+        )
+    )
+    atr = tr.rolling(window=atrLength).mean()
+    
+    # McGinley Dynamic calculation
+    mgd = df['close'].copy()
+    for i in range(1, len(df)):
+        mgd.iloc[i] = mgd.iloc[i-1] + (df['close'].iloc[i] - mgd.iloc[i-1]) / (0.0 if mgd.iloc[i-1] == 0 else (lengthMD * (df['close'].iloc[i] / mgd.iloc[i-1]) ** 4))
+    
+    # Pivot points detection
+    pl = df['low'].rolling(window=input_lookback + 1).min()
+    ph = df['high'].rolling(window=input_lookback + 1).max()
+    
+    # Support and resistance levels
+    support = pl.rolling(window=input_lookback).min()
+    resistance = ph.rolling(window=input_lookback).max()
+    
+    # Breakout detection
+    support_break = df['close'] < support
+    resistance_break = df['close'] > resistance
+    
+    # Retest conditions (simplified from Pine Script logic)
+    # Support retest: price comes back to test broken support
+    support_retest = (df['close'] < support) & (df['close'].shift(1) >= support)
+    
+    # Resistance retest: price comes back to test broken resistance
+    resistance_retest = (df['close'] > resistance) & (df['close'].shift(1) <= resistance)
+    
+    # Entry signals
+    long_entry = support_break & support_retest
+    short_entry = resistance_break & resistance_retest
+    
+    # Apply choppiness filter (only trade in non-choppy market)
+    long_entry = long_entry & (ci < ciThreshold)
+    short_entry = short_entry & (ci < ciThreshold)
+    
+    # Generate trade list
+    trade_num = 1
+    for i in range(len(df)):
+        if long_entry.iloc[i]:
+            results.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': int(df['time'].iloc[i]),
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                'entry_price': df['close'].iloc[i],
+                'atr': atr.iloc[i],
+                'stop_loss': df['close'].iloc[i] - (atr.iloc[i] * atrMultiplier),
+                'take_profit': df['close'].iloc[i] + (atr.iloc[i] * atrMultiplier * 1.5)
+            })
+            trade_num += 1
+        elif short_entry.iloc[i]:
+            results.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': int(df['time'].iloc[i]),
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                'entry_price': df['close'].iloc[i],
+                'atr': atr.iloc[i],
+                'stop_loss': df['close'].iloc[i] + (atr.iloc[i] * atrMultiplier),
+                'take_profit': df['close'].iloc[i] - (atr.iloc[i] * atrMultiplier * 1.5)
+            })
+            trade_num += 1
+    
+    return results
+ ATR calculation uses Wilder's smoothing method, computing true range across consecutive periods and applying an exponential weighted approach where each bar contributes with a weight of 1/atrLength, creating a recursive smoothing effect similar to Pine Script's native ATR function.
+
+For McGinley Dynamic, I'm iterating through the series and applying the formula where each new value depends on the previous value, the price change, and a smoothing factor based on the length parameter and the ratio of current price to prior price raised to the fourth power.
+
+The Choppiness Index calculation requires computing the sum of ATR values over the specified period, then dividing by the range between the highest high and lowest low over that same window, taking the logarithm of this ratio and normalizing by the logarithm of the period length.
+
+For pivot point detection, I'm using rolling windows to identify the lowest low and highest high within the lookback period, though I'm noting that this differs from Pine Script's pivotlow/pivothigh which have specific offset requirements—I'll need to adjust this implementation to match that behavior more precisely.
+
+The pivot calculations should be shifted backward by the lookback amount: pl = df['low'].shift(input_lookback).rolling(window=2*input_lookback+1).min() and ph = df['high'].shift(input_lookback).rolling(window=2*input_lookback+1).max(). This ensures the pivot point is positioned at the center of the window rather than at the end.
+
+However, since the strategy sets max_bars_back=500, it may tolerate some NaN values during the initial warm-up period. I'll implement the pivot detection as specified and handle NaN values appropriately when they appear.
+
+For the support and resistance box boundaries, I need to determine yLoc values by comparing adjacent bars. For support, if low[bb+1] > low[bb-1], use low[bb-1], otherwise use low[bb+1]. For resistance, apply the same logic with high values. Since I don't have direct access to previous values at specific offsets in pandas, I'll need to handle this carefully or approximate it.
+
+The more straightforward approach is to focus on the core entry conditions: detecting breakouts and retests. Breakouts occur when price crosses below support (cu = ta.crossunder(close, box.get_bottom(sBox))) or above resistance (co = ta.crossover(close, box.get_top(rBox))). Retests validate these breakouts by checking if price reverts back to the broken level with sufficient bars elapsed.
+
+The entry logic triggers when sRetValid is true (support retest confirmation) for long positions and rRetValid is true (resistance retest confirmation) for short positions, filtered by the tradeDirection parameter. I'll implement the full Pine Script logic in Python to capture these conditions accurately.
+
+The approach involves calculating multiple indicators—ATR with Wilder's method, Choppiness Index, McGinley Dynamic, pivot levels for support/resistance, and then tracking breakout and retest conditions. I'll start with ATR calculation using the high-low range and previous close differences to capture true range across the lookback period. The McGinley Dynamic uses an iterative approach where each value depends on the previous value, the price change, and a smoothing factor. For each bar, I calculate the difference between the current price and prior MGD, then divide by a fraction based on the length parameter and the price ratio raised to the 4th power. The loop starts from index 1 since the first value is already set to the initial close price.
+
+The Choppiness Index requires computing the ATR sum over a window, finding the highest high and lowest low across that same period, then applying the logarithmic formula to determine how choppy the market is.
+
+For pivot detection, I'm using rolling windows to identify swing highs and lows. The lowest low over a 2*lookback+1 period marks potential support levels, while the highest high marks resistance. I also need to track when these pivots actually occur by checking when values change, which I can accomplish by comparing shifted series.
+
+Looking at the box implementation, support boxes are created when pl changes, and resistance boxes when ph changes. Each box is defined by a bottom and top level—the support box extends from s_yLoc to pl, while the resistance box spans from ph to r_yLoc. I'm calculating these y-coordinates by comparing adjacent bar values to determine the appropriate price levels for each box boundary. I should simplify this and just use the pivot values directly for the box boundaries, avoiding the complex lookback calculations. For support, I'll use low as the bottom and the pivot high as the top. For resistance, the pivot low forms the bottom with high as the top. The breakout signals come from detecting when price crosses below support or above resistance using cumulative rolling minimums and maximums.
+
+Now I need to implement the retest logic to confirm the breakouts are valid before executing trades. The retest conditions check whether price respects the newly broken levels, looking at cases where price fails to sustain the breakout move. high >= sBot and close < sBot
+- r4: low <= rTop and low >= rBot and close > rTop (retest after short breakout)
+
+For actual entries, I need to check when sRetValid or rRetValid become true. The retestEvent function returns these values along with a retValue, but I only need the validity flags for entry signals. The logic validates retests by ensuring bars have passed since the event, the retest price meets the condition, and a confirmation occurs. retConditions checks if price crosses above or below the retest value depending on the pivot type, with repainting controlled by the repaint setting. For 'ph', it validates that price meets the retest condition (close >= retValue, high >= retValue, or confirmed close >= retValue). For 'pl', it checks the opposite (close <= retValue, low <= retValue, or confirmed close <= retValue). The retValid flag requires barssince the retEvent to be greater than 0 and within the valid window, with the appropriate condition met and retOccurred still false.
+
+The retEvent itself triggers when retActive transitions from false to true, and it can be re-triggered if the second condition is met. The function returns whether the retest is valid, the event state, and the retValue. For support retests, sRetValid checks if price respects the broken level; for resistance retests, rRetValid checks the opposite direction.
+
+The entry conditions fire when either sRetValid or rRetValid becomes true—triggering long or short positions respectively—though the tradeDirection parameter can restrict these to only longs, only shorts, or allow both.
+
+For the 'On' repainting mode, price crossing the retest level confirms the setup; for 'Off: Candle Confirmation', the candle must close with the condition met; for 'Off: High & Low', the intraday extreme must cross the level instead. I'll implement this with Wilder ATR, Choppiness Index, McGinley Dynamic, support/resistance detection with lookback logic, and the three retest validation modes.
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    # Parameters
+    atrLength = 14
+    ciLength = 14
+    ciThreshold = 61.8
+    lengthMD = 10
+    atrMultiplier = 1.5
+    lookback = 20
+    retSince = 2
+    retValid_limit = 2
+    repaint_mode = 'On'  # 'On', 'Off: Candle Confirmation', 'Off: High & Low'
+    
+    n = len(df)
+    results = []
+    trade_num = 1
+    
+    # True Range
+    tr1 = df['high'] - df['low']
+    tr2 = np.abs(df['high'] - df['close'].shift(1))
+    tr3 = np.abs(df['low'] - df['close'].shift(1))
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    
+    # Wilder ATR
+    atr = pd.Series(np.nan, index=df.index)
+    atr.iloc[atrLength - 1] = tr.iloc[:atrLength].mean()
+    for i in range(atrLength, n):
+        atr.iloc[i] = (atr.iloc[i-1] * (atrLength - 1) + tr.iloc[i]) / atrLength
+    
+    # Choppiness Index
+    ci_atr_sum = tr.rolling(window=ciLength).mean()
+    highest_high = df['high'].rolling(window=ciLength).max()
+    lowest_low = df['low'].rolling(window=ciLength).min()
+    high_low_range = highest_high - lowest_low
+    ci = pd.Series(np.nan, index=df.index)
+    valid_ci = ci_atr_sum.fillna(1) * high_low_range.fillna(1) > 0
+    ci[valid_ci] = 100 * np.log10(ci_atr_sum[valid_ci] / high_low_range[valid_ci]) / np.log10(ciLength)
+    
+    # McGinley Dynamic
+    mgd = pd.Series(np.nan, index=df.index)
+    mgd.iloc[0] = df['close'].iloc[0]
+    for i in range(1, n):
+        prev_mgd = mgd.iloc[i-1]
+        price = df['close'].iloc[i]
+        k = (price / prev_mgd) ** 4 if prev_mgd != 0 else 0
+        mgd.iloc[i] = prev_mgd + (price - prev_mgd) / (lengthMD * k) if k != 0 else prev_mgd
+    
+    # Pivot points
+    pl = pd.Series(np.nan, index=df.index)
+    ph = pd.Series(np.nan, index=df.index)
+    for i in range(lookback, n - lookback):
+        window_low = df['low'].iloc[i-lookback:i+lookback+1].min()
+        window_high = df['high'].iloc[i-lookback:i+lookback+1].max()
+        if df['low'].iloc[i] == window_low:
+            pl.iloc[i] = df['low'].iloc[i]
+        if df['high'].iloc[i] == window_high:
+            ph.iloc[i] = df['high'].iloc[i]
+    
+    # Support/Resistance boxes
+    sBot_series = pd.Series(np.nan, index=df.index)
+    sTop_series = pd.Series(np.nan, index=df.index)
+    rBot_series = pd.Series(np.nan, index=df.index)
+    rTop_series = pd.Series(np.nan, index=df.index)
+    
+    for i in range(lookback, n):
+        if not np.isnan(pl.iloc[i]):
+            s_yLoc = df['low'].iloc[i-lookback-1] if df['low'].iloc[i-lookback-1] > df['low'].iloc[i-lookback+1] else df['low'].iloc[i-lookback+1]
+            sBot_series.iloc[i] = df['low'].iloc[i-1]
+            sTop_series.iloc[i] = s_yLoc
+        if not np.isnan(ph.iloc[i]):
+            r_yLoc = df['high'].iloc[i-lookback-1] if df['high'].iloc[i-lookback-1] > df['high'].iloc[i-lookback+1] else df['high'].iloc[i-lookback+1]
+            rBot_series.iloc[i] = r_yLoc
+            rTop_series.iloc[i] = df['high'].iloc[i-1]
+    
+    # Breakout detection
+    sBreak = pd.Series(False, index=df.index)
+    rBreak = pd.Series(False, index=df.index)
+    
+    for i in range(1, n):
+        sBot_val = sBot_series.iloc[i] if not np.isnan(sBot_series.iloc[i]) else np.inf
+        rTop_val = rTop_series.iloc[i] if not np.isnan(rTop_series.iloc[i]) else -np.inf
+        
+        if df['close'].iloc[i] < sBot_val and df['close'].iloc[i-1] >= sBot_val:
+            sBreak.iloc[i] = True
+        if df['close'].iloc[i] > rTop_val and df['close'].iloc[i-1] <= rTop_val:
+            rBreak.iloc[i] = True
+    
+    # Retest logic
+    long_entry = pd.Series(False, index=df.index)
+    short_entry = pd.Series(False, index=df.index)
+    
+    for i in range(lookback, n):
+        if sBreak.iloc[i]:
+            sTop_val = sTop_series.iloc[i] if not np.isnan(sTop_series.iloc[i]) else np.inf
+            if df['close'].iloc[i] >= sTop_val and df['close'].iloc[i-1] < sTop_val:
+                long_entry.iloc[i] = True
+        if rBreak.iloc[i]:
+            rBot_val = rBot_series.iloc[i] if not np.isnan(rBot_series.iloc[i]) else -np.inf
+            if df['close'].iloc[i] <= rBot_val and df['close'].iloc[i-1] > rBot_val:
+                short_entry.iloc[i] = True
+    
+    return long_entry, short_entry, atr, ci, mgd
+
+I need to reconsider the pivot and box logic. The pivot detection should work by finding the lowest low and highest high within a window around each bar, where pl[i] represents the lowest point in the lookback window centered at position i-lookback. This gives the proper offset for identifying support and resistance levels that are lookback bars behind the current bar.
+
+For the box boundaries, I'll track sBot, sTop, rBot, and rTop separately since they represent different price levels. The sBot and rTop correspond to the pivot levels themselves (pl and ph), while sTop and rBot are the reference points one bar before the pivot, selected based on which adjacent bar has the higher or lower value.
+
+I can simplify the pivot detection using rolling windows. For pl, I'll shift the low price back by lookback bars and find the minimum over a window of 2*lookback+1 centered on that position. Similarly, ph uses the high price shifted back by lookback, taking the maximum over the same window. This approach aligns with how the Pine Script calculates pivot points.
+
+To detect when pivots change, I'll shift the series by one position and compare values—any time the current pl differs from the previous one marks a pivot event. For the box boundaries, sBot corresponds directly to pl values, while sTop needs to be reconstructed from the shifted series, finding the appropriate yLoc based on which adjacent bar value is higher.
+
+Rather than trying to reconstruct all the box logic exactly, I should focus on replicating the entry conditions accurately. The key signals are cu (crossing below support), co (crossing above resistance), and the retest validity flags for both directions.
+
+I'll calculate the cumulative minimum/maximum of the pivot series to represent the box boundaries, then detect crossovers and crossunders relative to these levels. For retests, I'll track bars since breakouts and validate that price action respects the broken levels within the lookback window.
+
+Starting with the basic indicators: I'll compute ATR using Wilder's method, then Choppiness Index, McGinley Dynamic, and pivot points for support and resistance detection. For pivots, I'll shift the rolling min/max by the lookback period to properly identify swing highs and lows. The entry logic hinges on detecting when price breaks a support level (cu) or tests a resistance level (co) after a confirmed pivot. price crossing retValue), use bar confirmation (close >= retValue with barstate.isconfirmed), or use high price (high >= retValue). The retest is valid when bars have passed since the event, the condition is met, and it hasn't already occurred.
+
+For support, the retest condition checks if price crosses above the retest value; for resistance, it checks if price crosses below. The validation requires sufficient bars to pass and the appropriate price condition to be satisfied.
+
+Entries trigger when the retest validation is true—going long on support retests and short on resistance retests. The trading direction parameter filters which signals to use, allowing for long-only, short-only, or both directions. Each entry records the timestamp, direction, price, and other details needed for tracking the trade.
+
+To implement this, I need to maintain state across iterations since retests depend on prior break events. I'll use variables to track the retest occurrence status and detect when retest events actually happen by comparing the current retest state against the previous bar's state. The logic checks which retest conditions are active, identifies when a retest event first occurs (retActive and not retActive[1]), and records the price level at that moment using valuewhen equivalent to find the most recent event's value.
+
+For the box boundaries, I need to determine the appropriate y-axis location based on the pivot high values, comparing adjacent bars to select the correct reference point. Then I'll validate the retest by ensuring enough bars have elapsed since the breakout, the retest conditions are met, and no prior retest has been recorded.
+
+When conditions align, I trigger the entry signal and update the retOccurred flag. After processing, I shift the retActive state forward to prepare for the next iteration. Finally, I apply the tradeDirection filter to only include entries matching the specified direction preference.
+
+The results get formatted into a structured list with metadata including trade number, direction, timestamps, and pricing information, incrementing the counter for each successive trade. I should verify the ATR computation aligns with the Pine Script implementation, which uses Wilder's smoothing method that differs from a standard exponential moving average. = 100 * np.log10(atr_sum / high_low_range) / np.log10(ciLength)
+    valid_ci = high_low_range.fillna(1) != 0
+    ci = pd.Series(np.nan, index=df.index)
+    ci[valid_ci] = ci_val[valid_ci]
+    
+    # McGinley Dynamic
+    mgd = pd.Series(np.nan, index=df.index)
+    mgd.iloc[0] = df['close'].iloc[0]
+    k = lengthMD * ((df['close'] / mgd.shift(1)) ** 4)
+    mgd = mgd.shift(1) + (df['close'] - mgd.shift(1)) / k.replace([np.inf, -np.inf], np.nan)
+    mgd.iloc[0] = df['close'].iloc[0]
+    
+    return atr, ci, mgd
+
+I need to reconsider the McGinley Dynamic calculation. The formula requires the previous MGD value in the denominator, so using shift(1) should work, but I need to be careful about division by zero and infinity cases when the ratio becomes very large. Let me verify the iteration approach handles the recursive nature correctly.
+
+For the Choppiness Index, I'm calculating the ratio of average true range to the high-low range over the period, then applying the logarithm transformation. I should ensure the range calculation doesn't produce zero to avoid division errors.
+
+The McGinley Dynamic indicator needs careful handling of the denominator to prevent overflow when prices diverge significantly from the moving average.
+
+For the retest event function, I'm checking if any retest conditions are met, then identifying when a new retest event occurs by detecting the transition from inactive to active. The function also compares the y2 value against the retest event's y2 value to determine validity, returning whether the retest is valid and whether a new event was triggered. I need to complete the short_entry section and handle direction filtering. The tradeDirection parameter should control which entries are generated:
+
+if tradeDirection == "Long":
+    long_entry = long_cond
+    short_entry = pd.Series(False, index=df.index)
+elif tradeDirection == "Short":
+    long_entry = pd.Series(False, index=df.index)
+    short_entry = short_cond
+else:  # "Both"
+    long_entry = long_cond
+    short_entry = short_cond
+
+For the Python implementation, I'll use 'long' and 'short' as strings rather than an enum. The Wilder RSI calculation requires computing gains and losses, then applying the smoothing formula where each new value depends on the previous smoothed average and the current change. I'll use a loop to handle the initial SMA, then apply the recursive smoothing formula for subsequent bars. The True Range calculation follows similarly to the RSI approach. I'll implement this across the full strategy:
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    # Parameters
+    atrLength = 14
+    ciLength = 14
+    ciThreshold = 61.8
+    lengthMD = 10
+    atrMultiplier = 1.5
+    lookback = 20
+    retSince = 2
+    retValid_limit = 2
+    repaint_mode = 'On'
+    tradeDirection = 'Both'
+    
+    n = len(df)
+    results = []
+    trade_num = 1
+    
+    # True Range
+    tr1 = df['high'] - df['low']
+    tr2 = np.abs(df['high'] - df['close'].shift(1))
+    tr3 = np.abs(df['low'] - df['close'].shift(1))
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    
+    # Wilder ATR
+    atr = pd.Series(np.nan, index=df.index)
+    atr.iloc[atrLength - 1] = tr.iloc[:atrLength].mean()
+    for i in range(atrLength, n):
+        atr.iloc[i] = (atr.iloc[i-1] * (atrLength - 1) + tr.iloc[i]) / atrLength
+    
+    # Choppiness Index
+    ci_atr_sum = tr.rolling(window=ciLength).mean()
+    high_low_range = df['high'].rolling(window=ciLength).max() - df['low'].rolling(window=ciLength).min()
+    ci = pd.Series(np.nan, index=df.index)
+    valid_ci_mask = high_low_range != 0
+    ci_values = 100 * np.log10(ci_atr_sum / high_low_range) / np.log10(ciLength)
+    ci[valid_ci_mask] = ci_values[valid_ci_mask]
+    
+    # McGinley Dynamic
+    mgd = pd.Series(np.nan, index=df.index)
+    mgd.iloc[0] = df['close'].iloc[0]
+    k = lengthMD * ((df['close'] / mgd.shift(1).replace(0, np.nan)) ** 4)
+    mgd = mgd.shift(1) + (df['close'] - mgd.shift(1)) / k.replace([np.inf, -np.inf], np.nan)
+    mgd.iloc[0] = df['close'].iloc[0]
+    
+    # Pivot points
+    pl = df['low'].shift(lookback).rolling(window=2*lookback+1).min()
+    ph = df['high'].shift(lookback).rolling(window=2*lookback+1).max()
+    
+    # Box values
+    sBot = pl.copy()
+    sTop = df['low'].shift(lookback+1)
+    rBot = df['high'].shift(lookback+1)
+    rTop = ph.copy()
+    
+    # Detect breakouts
+    sBreak = df['close'] < sBot
+    rBreak = df['close'] > rTop
+    
+    # Handle direction filtering based on tradeDirection parameter
+    if tradeDirection == "Long":
+        long_entry = pd.Series(True, index=df.index)
+        short_entry = pd.Series(False, index=df.index)
+    elif tradeDirection == "Short":
+        long_entry = pd.Series(False, index=df.index)
+        short_entry = pd.Series(True, index=df.index)
+    else:  # "Both"
+        long_entry = pd.Series(True, index=df.index)
+        short_entry = pd.Series(True, index=df.index)
+    
+    results = []
+    trade_num = 1
+    
+    # Identify support and resistance breakouts
+    sBreak_mask = (df['close'] < sBot) & sBot.notna()
+    rBreak_mask = (df['close'] > rTop) & rTop.notna()
+    
+    # Track when new breakouts occur
+    sBreak_new = sBreak_mask & ~sBreak_mask.shift(1).fillna(False)
+    rBreak_new = rBreak_mask & ~rBreak_mask.shift(1).fillna(False)
+    
+    # Initialize entry flags
+    sRetValid = pd.Series(False, index=df.index)
+    rRetValid = pd.Series(False, index=df.index)
+    
+    # Calculate support retest conditions
+    sRetActive_1 = (df['high'] >= sTop) & (df['close'] <= sBot)
+    sRetActive_2 = (df['high'] >= sTop) & (df['close'] >= sBot) & (df['close'] <= sTop)
+    sRetActive_3 = (df['high'] >= sBot) & (df['high'] <= sTop)
+    sRetActive_4 = (df['high'] >= sBot) & (df['high'] <= sTop) & (df['close'] < sBot)
+    
+    # Combine support retest conditions
+    sRetActive = sRetActive_1 | sRetActive_2 | sRetActive_3 | sRetActive_4
+    
+    # Track support retests by counting bars since last breakout
+    sBars_since_breakout = np.full(n, -1)
+    sRetOccurred = np.full(n, np.nan, dtype=float)
+    sRetEvent = np.full(n, False)
+    sRetValue_arr = np.full(n, np.nan, dtype=float)
+    
+    for i in range(n):
+        if sBreak_new.iloc[i]:
+            sBars_since_breakout[i] = 0
+            sRetOccurred[i] = np.nan
+        elif sBars_since_breakout[i-1] >= 0 and not np.isnan(sBars_since_breakout[i-1]):
+            sBars_since_breakout[i] = sBars_since_breakout[i-1] + 1
+        elif sBreak_mask.iloc[i]:
+            sBars_since_breakout[i] = 0
+            sRetOccurred[i] = np.nan
+        else:
+            sBars_since_breakout[i] = -1
+            sRetOccurred[i] = np.nan
+    
+    # Calculate resistance retest conditions
+    rRetActive_1 = (df['low'] <= rBot) & (df['close'] >= rTop)
+    rRetActive_2 = (df['low'] <= rBot) & (df['close'] <= rTop) & (df['close'] >= rBot)
+    rRetActive_3 = (df['low'] <= rTop) & (df['low'] >= rBot)
+    rRetActive_4 = (df['low'] <= rTop) & (df['low'] >= rBot) & (df['close'] > rTop)
+    
+    # Combine resistance retest conditions
+    rRetActive = rRetActive_1 | rRetActive_2 | rRetActive_3 | rRetActive_4
+    
+    # Track resistance retests
+    rBars_since_breakout = np.full(n, -1)
+    rRetOccurred = np.full(n, np.nan, dtype=float)
+    rRetEvent = np.full(n, False)
+    rRetValue_arr = np.full(n, np.nan, dtype=float)
+    
+    for i in range(n):
+        if rBreak_new.iloc[i]:
+            rBars_since_breakout[i] = 0
+            rRetOccurred[i] = np.nan
+        elif rBars_since_breakout[i-1] >= 0 and not np.isnan(rBars_since_breakout[i-1]):
+            rBars_since_breakout[i] = rBars_since_breakout[i-1] + 1
+        elif rBreak_mask.iloc[i]:
+            rBars_since_breakout[i] = 0
+            rRetOccurred[i] = np.nan
+        else:
+            rBars_since_breakout[i] = -1
+            rRetOccurred[i] = np.nan
+    
+    # Detect retest events (transition from False to True)
+    sRetEvent[1:] = sRetActive.iloc[1:] & ~sRetActive.iloc[:-1].values
+    rRetEvent[1:] = rRetActive.iloc[1:] & ~rRetActive.iloc[:-1].values
+    
+    sRetEvent[0] = sRetActive.iloc[0]
+    rRetEvent[0] = rRetActive.iloc[0]
+    
+    # Record retest values at event points
+    for i in range(n):
+        if sRetEvent[i]:
+            sRetValue_arr[i] = df['high'].iloc[i]
+        if rRetEvent[i]:
+            rRetValue_arr[i] = df['low'].iloc[i]
+    
+    # Retest event validity checks
+    for i in range(1, n):
+        if sRetEvent[i] and sBars_since_breakout[i] > retSince:
+            sRetValid.iloc[i] = True
+        if rRetEvent[i] and rBars_since_breakout[i] > retSince:
+            rRetValid.iloc[i] = True
+    
+    # Long and short entry conditions
+    long_cond = sRetValid
+    short_cond = rRetValid
+    
+    # Apply trade direction filter
+    if tradeDirection == "Long":
+        long_entry = long_cond
+        short_entry = pd.Series(False, index=df.index)
+    elif tradeDirection == "Short":
+        long_entry = pd.Series(False, index=df.index)
+        short_entry = short_cond
+    else:  # "Both"
+        long_entry = long_cond
+        short_entry = short_cond
+    
+    # Build results list for long entries
+    for i in range(n):
+        if long_entry.iloc[i]:
+            ts = int(df['time'].iloc[i])
+            results.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': ts,
+                'entry_time': datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                'entry_price_guess': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': df['close'].iloc[i],
+                'raw_price_b': df['close'].iloc[i]
+            })
+            trade_num += 1
+    
+    # Build results list for short entries
+    for i in range(n):
+        if short_entry.iloc[i]:
+            ts = int(df['time'].iloc[i])
+            results.append({
+                'trade_num': trade_num,
+                'direction

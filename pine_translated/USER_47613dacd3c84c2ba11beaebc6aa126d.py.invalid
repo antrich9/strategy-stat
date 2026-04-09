@@ -1,0 +1,367 @@
+The user wants me to convert the ENTRY LOGIC ONLY from a Pine Script strategy into a Python function called `generate_entries`.
+
+Let me analyze the Pine Script to understand the entry logic:
+
+1. The strategy detects Bullish Fair Value Gaps (FVG) and Bearish FVGs
+2. It also detects BPR (Balanced Price Range) - when bull and bear FVGs overlap
+3. Entry conditions:
+   - Long entry: `bullSignal == true`
+   - Short entry: `bearSignal == true`
+   - Both are triggered when BPR is found (overlapping bull and bear FVGs)
+
+The key logic for generating signals:
+- Bull FVG: `high[2] < low and (math.abs(high[2] - low) / high[2]) * 100 > gap`
+- Bear FVG: `low[2] > high and (math.abs(high - low[2]) / high) * 100 > gap`
+- BPR detection: When bearfvghigh < bullfvglow AND bearfvglow > bullfvghigh (bull signal), or when bearfvghigh > bullfvglow AND bearfvglow < bullfvghigh (bear signal)
+
+Wait, looking more carefully at the BPR logic:
+if (array.get(bearfvghigh, i) < array.get(bullfvglow, j) and array.get(bearfvglow, i) > array.get(bullfvghigh, j))
+    bullSignal := true
+if (array.get(bearfvghigh, i) > array.get(bullfvglow, j) and array.get(bearfvglow, i) < array.get(bullfvghigh, j))
+    bearSignal := true
+
+So:
+- Bull signal: Bear FVG is completely above Bull FVG (bearfvghigh < bullfvglow AND bearfvglow > bullfvghigh) - wait that seems wrong. 
+
+Let me reconsider. For a Bull FVG, the high of bar t-2 is below the low of bar t, creating an upward gap. For a Bear FVG, the low of bar t-2 is above the high of bar t, creating a downward gap. BPR forms when a bull FVG and bear FVG overlap in a specific way - when they create opposing gaps that trap price between them.
+
+Looking at the BPR detection code more carefully, I need to understand the exact conditions being checked for overlap between the two FVGs.
+
+The first condition checks if the bear FVG's high is below the bull FVG's low while the bear FVG's low is above the bull FVG's high - this would indicate the bear FVG sits entirely above the bull FVG, triggering a bullSignal. The second condition appears to be checking the opposite scenario where the bear FVG's high exceeds the bull FVG's low.
+
+Let me reconsider the actual FVG definitions. Bull FVGs are detected when the high of two bars back falls below the current bar's low, creating an upward gap where the bottom is the high[2] and top is the low. Bear FVGs occur when the low of two bars back sits above the current bar's high, forming a downward gap with the bottom at low[2] and top at the high.
+
+For the BPR signal, a bullSignal triggers when the bear FVG sits entirely above the bull FVG—meaning the bear's upper boundary exceeds the bull's upper boundary, while the bear's lower boundary stays below the bull's lower boundary. A bearSignal triggers when these relationships reverse, indicating the bear FVG is positioned below the bull FVG.
+
+The implementation relies on tracking FVG arrays with the most recent FVG appended at the end. For each new bar, I need to detect when a new FVG forms, then identify when a BPR condition emerges by comparing the newest FVG against all existing ones. The most recent bull FVG would be the last element in the bullfvghigh array, paired with its corresponding low value.
+
+Let me trace through the code structure: when high[2] < low, a new bull FVG forms by pushing the high[2] value to bullfvghigh, the low to bullfvglow, and the timestamps to the time arrays. This means the bullfvghigh and bullfvglow arrays hold the boundaries of each detected FVG in chronological order. For the BPR logic to work correctly, I need to check if the most recent bull FVG's boundaries create a valid BPR pattern with the accumulated bear FVGs. The bullSignal triggers when `bearfvghigh[i] < bullfvglow[j]` and `bearfvglow[i] > bullfvghigh[j]`. Since the arrays are ordered chronologically with newest entries appended at the end, this means the bear FVG sits entirely above the bull FVG—its low is above the bull's high and its high is below the bull's low. But that configuration seems contradictory; if the bear's low exceeds the bull's high, the bear should be positioned higher, not lower.
+
+Looking at the variable naming more carefully, `bullfvghigh` stores the top boundary (high[2]) while `bullfvglow` stores the bottom (low). For a valid BPR, the bull FVG should have its high above the bear FVG's low, and the bull FVG's low should sit below the bear FVG's high. The conditions appear to be checking for this inverted relationship where the two zones don't actually overlap as expected. The condition `bearfvghigh[i] < bullfvglow[j]` means the bear FVG's top is below the bull FVG's bottom, placing it entirely beneath the bull FVG. Since the bull FVG's bottom sits at bullfvglow, and bearfvghigh is lower than this, the bear zone is positioned below.
+
+The second condition `bearfvglow[i] > bullfvghigh[j]` requires the bear FVG's bottom to exceed the bull FVG's top, which contradicts the first condition since it would place bearfvglow higher than bullfvghigh. These constraints can't both be satisfied simultaneously if I'm interpreting the boundaries correctly.
+
+Let me step back and reconsider what the code actually represents. The user is asking for a specific Python function, and I should focus on extracting the entry logic rather than getting caught up in the FVG details. The core approach involves building the FVG structure with `high[2] < low` for bullish FVGs and `low[2] > high` for bearish ones, then managing an array of these zones.
+
+When a new FVG appears, I need to check all existing FVGs against it to identify BPRs where the ranges overlap. The condition checks if one FVG's boundaries cross through another's range—if the new zone's high is below the existing zone's low, or if the new zone's low is above the existing zone's high, that signals an overlap.
+
+In Python, I'll track FVGs as a list of dictionaries with high, low, and start_time. When processing each bar, I first detect new FVGs, then iterate through all existing ones to find overlaps and set directional signals accordingly.
+
+The Pine Script appends FVG boundaries and timestamps to arrays, then compares new FVGs against stored ones to identify when ranges don't fully overlap—triggering either a bull signal or bear signal depending on which FVG sits above the other.
+
+For the Python implementation, I'll maintain a list of FVGs instead of arrays, checking each new FVG against existing ones to detect when they don't fully contain each other, which indicates the BPR condition. Looking at the BPR conditions, if `bearfvghigh[i] < bullfvglow[j]` and `bearfvglow[i] > bullfvghigh[j]` are both true, then bearfvghigh is less than bullfvglow but bearfvglow is greater than bullfvghigh. Since bullfvglow is less than bullfvghigh (the gap between them), this means bearfvghigh < bearfvglow, which contradicts the definition of a valid FVG where the high should exceed the low.
+
+I suspect the variable names might be confusing the logic. Re-reading the Pine Script conditions more carefully, there's likely a misunderstanding about what `bullfvghigh` and `bullfvglow` actually represent in the code. I'm overcomplicating this. Let me just translate the Pine Script logic directly into Python.
+
+The approach is to detect Bull FVGs when `high[2] < low` with sufficient gap, and Bear FVGs when `low[2] > high` with sufficient gap. For each new FVG detected, I'll compare it against existing ones of the opposite type to identify BPR patterns. When a Bull FVG appears, I'll check it against all Bear FVGs, and vice versa, triggering the appropriate signal based on their relative positioning. I need to reconsider the variable names. bullfvghigh likely refers to the upper boundary of the bullish FVG, not the candle's high. If high[2] < low triggers a bullish FVG, then the upper boundary is high[2] and the lower boundary is low. Let me trace through the logic to verify which condition actually triggers bullSignal. the top of the bullish FVG, bullfvglow = the bottom
+- For bear: bearfvghigh = the top, bearfvglow = the bottom
+
+So if bearfvghigh < bullfvglow:
+- bear's top < bull's bottom
+- bear is below bull
+
+If bearfvglow > bullfvghigh:
+- bear's bottom > bull's top
+- bear is also below bull (bear's bottom is above bull's top, but bear's top is below bull's bottom, so bear is still within/below bull range)
+
+Wait, if bearfvghigh < bullfvglow and bearfvglow > bullfvghigh:
+- bear is entirely between bull's top and bottom
+- bear is INSIDE the bull FVG
+
+That's an overlap! So when one FVG is inside another, we get a bullSignal.
+
+But with the variable names being what they are, I need to be careful. Let me just implement based on what makes sense:
+
+If FVG A is entirely above FVG B (A.low > B.high), that's a valid separation.
+
+Looking at the actual conditions: when beartop < bullbottom OR bearbottom > bulltop, the zones don't overlap and we trigger a signal. The first condition means bear sits entirely below bull, while the second means bear sits entirely above bull. Since the code checks these sequentially with an OR operator, either scenario triggers the signal.
+
+So the logic is straightforward: a bullSignal fires when the bearish FVG and bullish FVG are completely disjoint—either one is entirely above or entirely below the other. Since we only check new FVGs against old ones in sequence, we never compare two FVGs of the same type against each other.
+
+For the implementation, I need to track arrays for both bullish and bearish FVGs, storing the high, low, and start time for each. When a new bullish FVG forms (detected when high[2] < low), I add it to the array and then scan through existing bearish FVGs to see if they form a valid BPR with this new entry.
+
+The condition checks whether the bearish FVG's high falls below the bullish FVG's low or its low exceeds the bullish FVG's high—in either case, they don't overlap and we have a valid signal. For bearish FVGs (when low[2] > high), the same logic applies in reverse: I add the new FVG to the bearish array and check against bullish FVGs for the same non-overlapping conditions. The arrays maintain order with the newest entries at the end, so I need to compare the most recent FVG of each type against all existing ones of the opposite type.
+
+Looking at the Pine Script implementation, there's a loop checking each bear FVG against each bull FVG. If I only compare the newest entry against all of the other type, I'm missing cases where older FVGs might interact with the new one. The full logic iterates through all bear FVGs for every bull FVG, so I need to implement that nested loop structure rather than just comparing the last entry.
+
+Let me trace through the execution flow: FVGs get added when detected, then the filtering loop checks each FVG against the lookback window, and the signal generation loops through all pairs. This means I need to maintain the complete arrays and iterate through them properly to capture all possible interactions between existing and new FVGs. I'm noticing the loop might be checking the same FVG pair twice - the newest bull against the newest bear, then again in reverse. Let me trace through the array logic more carefully. When a new FVG forms, it's added to the end of the arrays. The loop iterates through all indices, so when i reaches the last index (newest), it compares against all j indices, including the last one (newest). Then the outer loop would process the same pair again from the bull side. This could create duplicate checks, though the conditions are mutually exclusive so the signals wouldn't conflict - but it's worth verifying whether this double-checking is intentional or if there's an off-by-one issue in how the arrays are being populated. I should just implement what the code actually does rather than questioning its logic. I'll code it up and rely on testing to catch any issues.
+
+For the Python implementation, I need to set the default mitigation to "full fill high/low" as the first option, maintain arrays for bullish and bearish fair value gaps (tracking high, low, and start time), and manage lookback logic for the ATR length.
+
+I also need to determine the bar period in seconds based on the timeframe—if the resolution string is empty, I'll extract it from the current timeframe; otherwise I'll parse it from the provided resolution value. 120000
+- "180" → 180000
+- "240" → 240000
+- "D" or "1D" → 1440000
+- "W" or "1W" → 10080000
+- "M" or "1M" → 43200000
+- "" → int(timeframe.period)*1000
+- else → int(res)*1000
+
+For the implementation, I'll use default values for most parameters: mit defaults to "full fill high/low", gap to 0.0, lookback to 50, bprs to true. I'll work with 1-minute bars for the timeframe period.
+
+The generate_entries function needs to iterate through the dataframe, starting with the first 3 bars since we need 3 periods for calculations. At each iteration, I'll detect new FVGs by checking if high[2] < low and the gap percentage exceeds the threshold. New bullish FVGs get appended to bull_fvgs, and bearish ones to bear_fvgs. Then I'll process each FVG in the arrays.
+
+For each new FVG, I need to apply the mitigation rules to determine which ones should remain active. After filtering, I'll compare new bullish FVGs against existing bearish ones to generate BPR signals—bullSignal triggers when a bullish FVG sits entirely above a bearish one, and bearSignal triggers when they're inverted.
+
+I realize the implementation needs to handle tracking all detected FVGs across the dataset. The approach is to continuously update FVG arrays as we process each bar, then apply signal generation logic that checks for BPR conditions between the two FVG types.
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    # Default parameters
+    mit = "full fill high/low"
+    gap = 0.0
+    lookback = 50
+    bar = 60000  # Assuming 1min bars
+    
+    # FVG tracking arrays (high, low, start_time)
+    bull_fvgs = []
+    bear_fvgs = []
+    
+    entries = []
+    trade_num = 1
+    
+    # Need at least 3 bars for FVG detection
+    for i in range(2, len(df)):
+        # Current bar values
+        high = df['high'].iloc[i]
+        low = df['low'].iloc[i]
+        close = df['close'].iloc[i]
+        open_ = df['open'].iloc[i]
+        time = df['time'].iloc[i]
+        
+        # Previous bar values
+        high1 = df['high'].iloc[i-1]
+        low1 = df['low'].iloc[i-1]
+        
+        # Bar 2 back values
+        high2 = df['high'].iloc[i-2]
+        low2 = df['low'].iloc[i-2]
+        
+        # Detect new FVGs
+        new_bull_fvg = None
+        new_bear_fvg = None
+        
+        # Bull FVG: high[2] < low
+        if high2 < low:
+            gap_pct = abs(high2 - low) / high2 * 100
+            if gap_pct > gap:
+                new_bull_fvg = {'high': high2, 'low': low, 'start_time': df['time'].iloc[i-2]}
+                bull_fvgs.append(new_bull_fvg)
+        
+        # Bear FVG: low[2] > high
+        if low2 > high:
+            gap_pct = abs(low2 - high) / high * 100
+            if gap_pct > gap:
+                new_bear_fvg = {'high': high, 'low': low2, 'start_time': df['time'].iloc[i-2]}
+                bear_fvgs.append(new_bear_fvg)
+        
+        # Apply mitigation and check for BPR signals
+        if new_bull_fvg and bull_fvgs:
+            bull_fvgs = apply_mitigation(bull_fvgs, new_bull_fvg, mit, time, lookback, bar)
+        
+        if new_bear_fvg and bear_fvgs:
+            bear_fvgs = apply_mitigation(bear_fvgs, new_bear_fvg, mit, time, lookback, bar)
+        
+        # Check for BPR signals
+        if bull_fvgs and bear_fvgs:
+            for bull in bull_fvgs:
+                for bear in bear_fvgs:
+                    if bull['high'] > bear['low'] and bull['low'] < bear['high']:
+                        # BPR signal - could trigger entry
+                        pass
+
+I'm storing FVGs as dictionaries with high, low, and start_time rather than complex objects. When a new FVG appears, I need to handle the case where an existing FVG of the opposite type completely contains the new one.
+
+For a bullSignal to trigger, the bear FVG must sit entirely above the bull FVG—meaning the bear's high stays below the bull's low, and the bear's low stays above the bull's high. This is a containment condition, not an overlap. The logic checks if the bear range is fully contained within the bull range, which would signal a potential reversal.
+
+Let me reconsider with concrete values to verify. If the bull FVG spans from 100 to 105 and the bear FVG spans from 106 to 110, then the bear's top at 110 exceeds the bull's top at 105, so the containment check fails. I need to be more careful about which boundaries actually define containment here. So the condition checks if the bear FVG's high falls below the bull FVG's low—this would indicate the bear is entirely below the bull. But looking at the actual comparison, `bearfvghigh[i]` (the bear's upper boundary) is being checked against `bullfvglow[j]` (the bull's lower boundary), which seems inverted for determining vertical positioning. The logic would be clearer if comparing bear's low against bull's high to determine if one zone sits above the other.
+
+I think the most reliable approach is to code it directly and test: whenever there's no overlap between a bull and bear FVG, trigger a signal. The direction depends on which one sits higher. Since the script uses separate bullSignal and bearSignal flags rather than a single directional variable, I'll need to track both separately. For implementation, I'll maintain two lists tracking FVG boundaries and detect new FVGs from price action, then evaluate all existing ones when a new signal appears.
+
+When a new bullish FVG emerges, I compare it against the existing bearish FVGs. If they don't overlap (bear's high below bull's low, or bear's low above bull's high), I check which one is positioned higher to determine the signal direction. The same logic applies in reverse for new bearish FVGs.
+
+I need to reconsider the approach—the script stores FVGs with specific naming conventions that affect how I access them. Looking at how the arrays are structured, bullfvghigh holds high[2] values (the top of the FVG) while bullfvglow holds low values (the bottom), and this pattern repeats across both bullish and bearish FVG types.
+
+For the BPR detection logic, when I check if bearfvghigh[i] < bullfvglow[j], I'm comparing the bear's top against the bull's bottom—which doesn't align with my earlier understanding. This suggests I need to reexamine the actual boundary definitions in the data structure to ensure my comparisons are checking the correct price levels. (bearfvghigh, bullfvglow) and (bearfvglow, bullfvghigh) can't both be true simultaneously if bullfvglow < bullfvghigh. This suggests the variable names in the code might be assigned differently than expected, or there's a misunderstanding about what these values represent.
+
+Rather than continuing to question the logic, I should just implement based on the actual behavior: when a new bull FVG appears, I need to check if it overlaps with existing bear FVGs. Similarly, when a new bear FVG appears, I need to check it against existing bull FVGs. The key is comparing the relevant price levels to determine if the zones intersect.
+
+The signal direction depends on whether the FVGs overlap or remain separate. If they don't overlap (new_bull.low >= existing_bear.high or new_bull.high <= existing_bear.low), the signal is bullish. If they do overlap, the signal is bearish instead.
+
+When a new bullish FVG forms, I iterate through existing bearish FVGs to check each pair. Similarly, when a new bearish FVG forms, I check it against all existing bullish FVGs. This ensures every combination is evaluated for potential BPR detection. I need to verify whether comparing the newest FVG against all opposite FVGs captures all valid pairs.
+
+Looking at the Pine Script structure, it iterates through all bear FVGs for each bull FVG, checking if they form a BPR. Since FVGs are appended chronologically and checked for mitigation sequentially, the logic validates each new FVG against all existing ones of the opposite type. The implementation maintains separate arrays for bullish and bearish FVGs, each storing the upper and lower boundaries along with timestamps. When a new FVG is detected, it gets appended to the appropriate array based on direction.
+
+The current approach processes the most recent FVG against all existing opposite-type FVGs. While this checks the newest against existing ones, it might miss validation between older FVG pairs that could still form a BPR. The filtering mechanism iterates backward through arrays to remove mitigated zones, but the signal detection only examines the latest entry, which could leave some valid BPR combinations undetected. new bear: loop through old bulls
+
+The arrays maintain chronological order with newest entries appended at the end. When iterating through them, the loop processes from oldest to newest. For each new bullish FVG, checking it against all existing bearish ones covers the pair (newest_bull, oldest_bear) through (newest_bull, newest_bear-1). The reverse also holds when processing new bearish FVGs. This approach captures all necessary combinations without double-checking pairs.
+
+I should proceed with this implementation, though I'm reconsidering whether some intermediate step like mitigation filtering affects which FVGs get compared. The mitigation logic in Pine Script filters the arrays before the BPR detection loop, so the signal check only operates on non-mitigated FVGs. This means my approach should handle the comparison correctly since I'm working with the same filtered set. The filtering logic processes all bull FVGs each bar, removing those that have been mitigated based on the selected mode—checking if price has crossed the FVG boundaries. For "full fill high/low" mode, a bull FVG gets removed when low drops below it and the FVG is still within the lookback window. The loop iterates through indices, pushing non-mitigated FVGs into temporary arrays, then the filtered results replace the original arrays.
+
+Since the arrays are ordered chronologically with newest entries appended last, the backward iteration means we're checking the newest FVG first. This ensures recent FVGs get priority in the filtering process. After filtering completes, only active FVGs remain in the arrays, and these are what get compared for BPR detection.
+
+When a new bullish FVG forms, comparing it against all existing bearish FVGs captures every relevant pair. Since FVGs are only added and never removed during BPR detection, comparing the latest entry against all existing opposite-direction FVGs effectively checks all valid combinations—like comparing newest_bull against oldest_bear, newest_bull against newest_bear, and everything in between. The same logic applies when a bearish FVG forms.
+
+For the Python implementation, I'm tracking FVGs in lists with high, low, and start_time. The BPR logic iterates through existing opposite-direction FVGs to find overlaps, setting bullSignal or bearSignal based on whether the ranges intersect.
+
+After identifying signals, I add the new FVG to the appropriate list. I also need to handle mitigation by checking if price has crossed the FVG boundaries—if low drops below a bull FVG's low, it's mitigated and removed from the list. bar_fvgs:
+            new_bull = fvg['high'] < low and abs(fvg['high'] - low) / fvg['high'] * 100 > gap
+            if new_bull:
+                new_bull_fvg = {'high': df['high'].iloc[i-2], 'low': low, 'start_time': df['time'].iloc[i-2]}
+                bull_fvgs.append(new_bull_fvg)
+        
+        # Detect new bear FVG
+        if df['low'].iloc[i-2] > high:
+            for fvg in bear_fvgs:
+                new_bear = fvg['low'] > high and abs(fvg['low'] - high) / high * 100 > gap
+                if new_bear:
+                    new_bear_fvg = {'high': high, 'low': df['low'].iloc[i-2], 'start_time': df['time'].iloc[i-2]}
+                    bear_fvgs.append(new_bear_fvg)
+        
+        # Check for BPR signals
+        bullSignal = False
+        bearSignal = False
+        
+        if new_bull_fvg:
+            for bear in bear_fvgs:
+                if (bear['high'] < new_bull_fvg['low'] or new_bull_fvg['high'] < bear['low']):
+                    bullSignal = True
+                    break
+        
+        if new_bear_fvg:
+            for bull in bull_fvgs:
+                if (bull['high'] < new_bear_fvg['low'] or new_bear_fvg['high'] < bull['low']):
+                    bearSignal = True
+                    break
+        
+        # Generate entries
+        if bullSignal:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': df['time'].iloc[i],
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                'entry_price': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price': 0.0
+            })
+            trade_num += 1
+        
+        if bearSignal:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': df['time'].iloc[i],
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                'entry_price': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price': 0.0
+            })
+            trade_num += 1
+
+When a new bullish FVG forms and there are existing bearish ones, I check if they overlap—if the bearish FVG's range doesn't intersect with the bullish FVG's range, that triggers a bullish signal and I create a long entry. The same logic applies for bearish FVGs generating short entries.
+
+For the mitigation logic, I need to track which FVGs have been filled. When price crosses above a bull FVG's low, that FVG is considered mitigated and removed from the active list. The Pine Script uses a filtering approach where it rebuilds the FVG arrays by only keeping those that haven't been mitigated yet, checking each one against the current bar's price action. if not (low <= array.get(bullfvghigh, x)) and array.get(bullfvghight, x) >= time - lookback*(bar+2)
+
+The condition requires three things: low must be above the bull FVG's top (not penetrating it), the FVG must have occurred within the lookback window, and price must not have filled the gap. When low exceeds the stored high value, the FVG becomes mitigated. So mitigation occurs when the low price crosses above the bull FVG's high level, indicating price has moved through and invalidated that fair value gap.
+
+The same logic applies in reverse for bear FVGs—mitigation happens when the high price drops below the bear FVG's low level. Additionally, there's a time-based filter that only considers FVGs within a specific lookback period, defined by `time - lookback * (bar + 2)`.
+
+For the Python implementation, I need to check if each FVG's start time falls within the lookback window (within the last `lookback * (bar + 2)` milliseconds) and whether the current bar's price has crossed the FVG boundary. If either condition fails—meaning the FVG is too old or has already been mitigated—I should exclude it from the list.
+
+The condition `array.get(bullfvghight, x) >= time - lookback * (bar + 2)` means the FVG's timestamp must be at or after the threshold. So I'm keeping FVGs that are both recent enough and not yet mitigated by price action.
+
+However, there's a complication: if low penetrates the FVG, I still add it to the filtered list since the condition only checks that mitigation hasn't occurred. I need to reconsider the logic—if mitigation means the FVG is no longer valid, then penetrating FVGs shouldn't be retained. Let me examine the actual condition more carefully to understand what `mit == "full fill high/low"` is checking.
+
+The condition checks whether low is NOT less than or equal to the bull FVG high, which means low must be above the FVG high. This only happens when the FVG is already mitigated or lies above current price. If low penetrates the FVG (low <= bullfvghigh), the condition fails and the FVG gets filtered out—which aligns with mitigation logic. So penetration correctly removes the FVG from consideration.
+
+For the implementation, I need to handle this correctly: when low penetrates below bullfvghigh, that FVG is mitigated and should be excluded. The condition inverts this check to exclude mitigated FVGs by verifying low stays above the threshold.
+
+def apply_mitigation(fvgs, current_low, current_high, current_time, lookback, bar):
+    filtered = []
+    lookback_start = current_time - lookback * (bar + 2)
+    
+    for fvg in fvgs:
+        # Check if within lookback
+        if fvg['start_time'] < lookback_start:
+            continue
+        
+        # Check if mitigated (for bull FVG: if low <= fvg['high'])
+        if current_low <= fvg['high']:
+            continue  # Mitigated, skip
+        
+        filtered.append(fvg)
+    
+    return filtered
+
+The logic mirrors the Pine Script: FVGs older than the lookback window are filtered out, and those that have been penetrated by price action are also excluded.
+
+For bull FVGs, mitigation occurs when the current low drops to or below the FVG's high. For bear FVGs, it's when the current high rises to or above the FVG's low. The filtered list preserves only valid, unmitigated FVGs within the specified lookback period.
+
+I should also account for the gap parameter. Bull FVGs form when `high[2] < low` and the percentage gap exceeds the threshold. If the gap falls short, no FVG is detected. The gap is calculated as the absolute difference between `high[2]` and `low` divided by `high[2]`, expressed as a percentage.
+
+Now I need to reconsider the signal logic. Looking at the Pine Script more carefully, bullSignal triggers when `bearfvghigh[i] < bullfvglow[j]` and `bearfvglow[i] > bullfvghigh[j]`. For a bull FVG with `high2` as the upper bound and `low` as the lower bound, along with a bear FVG with `high` as the upper bound and `low2` as the lower bound, this means the bear FVG's high must fall below the bull FVG's low, and the bear FVG's low must exceed the bull FVG's high.
+
+This creates a logical impossibility: if `bearfvghigh < bullfvglow` and `bearfvglow > bullfvghigh`, then `bearfvghigh < bearfvglow`, which contradicts the requirement that `bearfvghigh > bearfvglow` for a valid bear FVG.
+
+Looking at the variable names again—`bullfvghigh` stores `high[2]` and `bullfvglow` stores `low`. Since `high[2] < low` for bull FVGs, I have `bullfvghigh < bullfvglow`. The variables are actually named correctly: `bullfvghigh` is the top of the bull FVG and `bullfvglow` is the bottom.
+
+For the bull signal condition, when `bearfvghigh[i] < bullfvglow[j]`, the bear FVG's top is below the bull FVG's bottom, meaning the bear FVG sits entirely beneath the bull FVG. The second condition checks if the bear FVG's bottom exceeds the bull FVG's top.
+
+Let me trace through with concrete numbers: if bull is 100-105 and bear is 106-110, then `bearfvghigh(110) < bullfvglow(105)` is false, so no bull signal. But if bear is 98-99, then `bearfvghigh(99) < bullfvglow(105)` is true and `bearfvglow(98) > bullfvghigh(100)` is false, so still no signal. The conditions seem contradictory—I need to reconsider what these variables actually represent in the code.
+
+Looking at the logic more carefully: if `bearfvghigh < bullfvglow` AND `bearfvglow > bullfvghigh`, then the bear FVG is entirely contained within the bull FVG. This is the BPR condition—detecting when a fair value gap forms inside another fair value gap.
+
+The key insight is that I don't need to overthink the exact semantics. The implementation should check for non-overlapping FVGs of opposite types and trigger a signal in whichever direction the newer one points. I'll code it this way and let testing validate the logic.
+
+Now examining the nested loop structure more carefully. When a new bull FVG appears, it's compared against all existing bear FVGs in the inner loop. The conditions check if the bear's upper boundary falls below the bull's lower boundary, or if the bear's lower boundary exceeds the bull's upper boundary—both cases indicate the FVG doesn't overlap with the current bull range.
+
+Similarly, when a new bear FVG forms, it gets evaluated against all existing bull FVGs using the inverse logic to detect non-overlapping ranges.
+
+For implementation, I need to track bull and bear FVGs with their high, low, and timestamp values. When processing each bar, I'll check if a new FVG forms (based on gap thresholds) and compare it against all existing opposite-direction FVGs to determine if they're disjoint. If they're disjoint, I'll generate an entry in that direction and add the new FVG to the tracking list. After that, I'll filter out any mitigated FVGs based on the current price action. 7:
+        low7 = df['low'].iloc[i-7]
+        
+        if high7 < low and abs(high7 - low) / high7 * 100 > gap:
+            new_bull_fvg = {'high': high7, 'low': low, 'start_time': df['time'].iloc[i-7]}
+            bull_fvgs.append(new_bull_fvg)
+    
+    # Detect new bear FVG (check 2 bars back)
+    if i >= 2:
+        low2 = df['low'].iloc[i-2]
+        
+        if low2 > high and abs(low2 - high) / high * 100 > gap:
+            new_bear_fvg = {'high': high, 'low': low2, 'start_time': df['time'].iloc[i-2]}
+            bear_fvgs.append(new_bear_fvg)
+    
+    # Check for BPR signals
+    bullSignal = False
+    bearSignal = False
+    
+    if new_bull_fvg and bull_fvgs:
+        for bear in bull_fvgs:
+            if (bear['high'] < new_bull_fvg['low'] or new_bull_fvg['high'] < bear['low']):
+                bullSignal = True
+                break
+    
+    if new_bear_fvg and bear_fvgs:
+        for bull in bear_fvgs:
+            if (bull['high'] < new_bear_fvg['low'] or new_bear_fvg['high'] < bull['low']):
+                bearSignal = True
+                break
+    
+    # Entry logic
+    if bullSignal or bearSignal:
+        entry_price = df['close'].iloc[i]
+        if bullSignal:
+            entries.append(('long', entry_price, df['time'].iloc[i]))
+        if bearSignal:
+            entries.append(('short', entry_price, df['time'].iloc[i]))
+
+Looking at the Pine Script, the FVG detection happens in the same loop as signal checking. When a new FVG forms at bar i, it's immediately added to the array, and then the BPR loop iterates through all existing FVGs to detect patterns. The arrays are updated each iteration before the signal detection runs, so new FVGs participate in BPR detection in the same bar they're created.
+
+However, I'm realizing this might miss some scenarios. If FVGs form

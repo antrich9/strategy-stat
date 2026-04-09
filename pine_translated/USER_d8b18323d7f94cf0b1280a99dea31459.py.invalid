@@ -1,0 +1,111 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    
+    # Parse timestamps
+    df['datetime'] = pd.to_datetime(df['time'], unit='s', utc=True)
+    df['hour'] = df['datetime'].dt.hour
+    
+    # Detect UK trading session (2300-0700)
+    in_session = ((df['hour'] >= 23) | (df['hour'] < 7))
+    in_session_prev = in_session.shift(1).fillna(False).astype(bool)
+    
+    # Identify session boundaries
+    new_session = in_session & ~in_session_prev
+    session_end = ~in_session & in_session_prev
+    
+    # Track session highs and lows
+    asia_high = np.where(new_session, df['high'], np.nan)
+    asia_low = np.where(new_session, df['low'], np.nan)
+    
+    for i in range(1, len(df)):
+        if in_session.iloc[i]:
+            asia_high[i] = max(asia_high[i-1], df['high'].iloc[i]) if not np.isnan(asia_high[i-1]) else df['high'].iloc[i]
+            asia_low[i] = min(asia_low[i-1], df['low'].iloc[i]) if not np.isnan(asia_low[i-1]) else df['low'].iloc[i]
+        else:
+            asia_high[i] = asia_high[i-1]
+            asia_low[i] = asia_low[i-1]
+    
+    df['asia_high'] = asia_high
+    df['asia_low'] = asia_low
+    
+    # Valid trading hours
+    df['valid_trade_time'] = ((df['hour'] >= 2) & (df['hour'] < 5)) | ((df['hour'] >= 10) & (df['hour'] < 12))
+    
+    # OB and FVG detection functions
+    df['is_up'] = df['close'] > df['open']
+    df['is_down'] = df['close'] < df['open']
+    
+    # FVG detection using shifted values
+    df['
+
+fvg_up'] = df['low'] > df['high'].shift(2)
+    df['fvg_down'] = df['high'] < df['low'].shift(2)
+    
+    # Order block detection comparing current and previous candles
+    df['ob_up'] = df['is_down'].shift(2) & df['is_up'].shift(1) & (df['close'].shift(1) > df['high'].shift(2))
+    df['ob_down'] = df['is_up'].shift(2) & df['is_down'].shift(1) & (df['close'].shift(1) < df['low'].shift(2))
+    
+    # Imbalance detection comparing three candles back
+    df['top_imbalance'] = (df['low'].shift(2) <= df['open'].shift(1)) & (df['high'] >= df['close'].shift(1))
+    df['bottom_imbalance'] = (df['high'].shift(2) >= df['open'].shift(1)) & (df['low'] <= df['close'].shift(1))
+    
+    # Detect when price sweeps beyond Asian session range
+    pdhl_sweep_long = (df['close'] < df['asia_low'].shift(1)) & (df['close'] > df['asia_low'])
+    pdhl_sweep_short = (df['close'] > df['asia_high'].shift(1)) & (df['close'] < df['asia_high'])
+    
+    # Build long and short entry conditions based on momentum signals
+    long_cond = (df['ob_up'] | df['fvg_up'] | df['top_imbalance']) & df['valid_trade_time'] & ~df['in_session']
+    short_cond = (df['ob_down'] | df['fvg_down'] | df['bottom_imbalance']) & df['valid_trade_time'] & ~df['in_session']
+    
+    # Initialize result list and trade counter
+    entries = []
+    trade_num = 1
+    
+    # Scan through each row to capture entry signals
+    for i in range(len(df)):
+        if long_cond.iloc[i]:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': int(df['time'].iloc[i]),
+                'entry_time': df['datetime'].iloc[i].isoformat(),
+                'entry_price_guess': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': df['close'].iloc[i],
+                'raw_price_b': df['close'].iloc[i]
+            })
+            trade_num += 1
+        elif short_cond.iloc[i]:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': int(df['time'].iloc[i]),
+                'entry_time': df['datetime'].iloc[i].isoformat(),
+                'entry_price_guess': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': df['close'].iloc[i],
+                'raw_price_b': df['close'].iloc[i]
+            })
+            trade_num += 1
+    
+    return entries
+
+I'm noticing the logic needs refinement around session boundaries. The key issue is that entries shouldn't trigger while the Asia session is active. My current approach uses `in_session` as a state indicator, but I need to ensure entries only fire after the session concludes. The sweep conditions should capture when price moves beyond the session range—long sweeps when price dips below the session low, short sweeps when price exceeds the session high—then trigger entries on the candle that confirms the sweep is complete. I need to clarify the sweep logic. When price moves below the previous session's low, that's a sweep of the low. The condition should capture when the close is below the session low from two bars back:

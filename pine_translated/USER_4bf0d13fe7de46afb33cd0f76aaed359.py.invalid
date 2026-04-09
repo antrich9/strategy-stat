@@ -1,0 +1,5 @@
+is_retest_active = (i - sRetEventBar) <= input_retValid and (i - sRetEventBar) > 0
+   if is_retest_active:
+       # check if we need to update retEvent based on y2
+       # for support: if high > sRetValue: retEvent = True, sRetEventBar = i, sRetValue = high
+       # for resistance: if low < rRetValue: retEvent = True, rRetEventBar = i, rRetValue = low

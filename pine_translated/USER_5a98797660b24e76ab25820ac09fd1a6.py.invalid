@@ -1,0 +1,3 @@
+sma54_4h = close_4h1.rolling(54).mean()
+loc1 = sma54_4h
+loc21 = loc1 > loc1.shift(1)

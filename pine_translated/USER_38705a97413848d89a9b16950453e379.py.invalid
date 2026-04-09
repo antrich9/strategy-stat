@@ -1,0 +1,9 @@
+df['prev_low'] = df['low'].shift(1)
+df['prev_close'] = df['close'].shift(1)
+df['tr'] = np.maximum(
+    df['high'] - df['low'],
+    np.maximum(
+        np.abs(df['high'] - df['prev_close']),
+        np.abs(df['prev_low'] - df['close'])
+    )
+)

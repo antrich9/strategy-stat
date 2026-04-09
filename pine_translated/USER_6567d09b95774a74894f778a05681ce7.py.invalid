@@ -1,0 +1,485 @@
+The user wants me to convert a Pine Script strategy into a Python function called `generate_entries`. Let me analyze the Pine Script code carefully.
+
+Key points from the Pine Script:
+1. It's a strategy called "Graystone Entry 3: Last Chance"
+2. It uses two timeframes: tradingTF (240) and executionTF (60)
+3. The strategy detects:
+   - Lower Low/Lower Close for bearish trend
+   - Higher High/Higher Close for bullish trend
+   - Entry 3 Zone violation (spike through but don't close above/below)
+   - Double Top/Bottom patterns
+4. Entry conditions:
+   - Long: bullishTrend AND violationOccurred AND doubleBottomFormed AND stopLevel and targetLevel valid AND rr >= 3.0
+   - Short: bearishTrend AND violationOccurred AND doubleTopFormed AND stopLevel and targetLevel valid AND rr >= 3.0
+
+The challenge is that this strategy uses `request.security()` to get higher timeframe data. In Python, we'll need to resample the data to simulate the higher timeframe behavior.
+
+Let me break down the logic:
+
+1. Trading timeframe (240) - detect structure:
+   - lowerLow = htfLow < htfLow[1]
+   - lowerClose = htfClose < htfClose[1]
+   - lowerLowLowerClose = lowerLow and lowerClose
+   - higherHigh = htfHigh > htfHigh[1]
+   - higherClose = htfClose > htfClose[1]
+   - higherHighHigherClose = higherHigh and higherClose
+
+2. Track structure levels when these conditions are met
+
+3. Entry 3 Zone Definition (after violation):
+   - Bearish: high > outsideReturnHigh and close <= outsideReturnHigh
+   - Bullish: low < outsideReturnLow and close >= outsideReturnLow
+   
+4. Next, I need to identify double top and bottom patterns within the entry zone. For double tops, I'm looking for two tests of the same high level within a lookback period where the price spikes above but closes below the level. Double bottoms follow the opposite pattern with price dipping below a low but closing above it.
+
+5. Finally, entries trigger when bullish trends form double bottoms or bearish trends form double tops, with the condition requiring a valid stop level and achieving at least a 3:1 reward-to-risk ratio.
+
+For implementation, I'll need to handle higher timeframe data by resampling, track state across bars using cumulative calculations, and implement Wilder's RSI for the ATR indicator. The approach involves creating a function that processes the dataframe and returns a list of dictionaries containing entry information.
+
+Since `request.security()` in Pine Script pulls data from a higher timeframe, I'll need to resample the input data accordingly. The trading timeframe is 240 minutes (4-hour), so I'll group the execution timeframe data into 4-hour candles to approximate the higher timeframe analysis. The Pine Script operates on the execution timeframe but references the trading timeframe via `request.security()`, so the condition checking happens at bar i on the lower timeframe, with higher timeframe data available as `htfHigh`, `htfLow`, etc.
+
+To handle this in Python, I'll resample to the trading timeframe first, compute all necessary indicators, then check conditions at each bar of the execution timeframe using the corresponding values from the higher timeframe.
+
+The implementation plan involves resampling to 4-hour candles for structure detection, computing lower lows and higher highs, identifying violations where price spikes through a level but closes back, tracking double tops/bottoms within a lookback period, calculating ATR and stop levels, and confirming risk-reward ratios above 3.0. The pipsToPrice function will convert pips using the minimum tick size multiplied by pips and 10.
+
+Since the input dataframe doesn't include ticker information, I'll need to establish a default minimum tick value—likely 0.0001 for most forex pairs. With that constraint, the function will resample to 4-hour candles, detect structure by comparing sequential highs and lows, track violations where price spikes through outside return levels, identify double patterns within the 5-bar lookback window, compute ATR over 14 periods, calculate stop levels relative to double highs/lows, and validate entry conditions based on the 3.0+ risk-reward threshold.
+
+For the resampling approach, I'm setting a tick size of 0.0001 as a baseline. The double top formation requires tracking the first high within the entry zone, then checking for a second test within 5 bars that confirms the pattern without closing above the level. If price does close above, the pattern resets with the new high. Similarly, for double bottoms, I'll track the initial low within the zone and validate subsequent tests against the same criteria. # Test current bar against previous high
+                if abs(low - doubleBottomLow) <= (doubleBottomLow * threshold):
+                    doubleBottomFormed = True
+                # Reset if price breaks below and closes below
+                elif low < doubleBottomLow and close < doubleBottomLow:
+                    doubleBottomLow = low
+                    lastDoubleBottomBar = idx
+                    doubleBottomFormed = False
+                # Update if spike below but recovers
+                elif low < doubleBottomLow and close >= doubleBottomLow:
+                    doubleBottomLow = low
+                    lastDoubleBottomBar = idx
+
+    # Calculate ATR
+    atr = compute_wilder_atr(df['high'], df['low'], df['close'], 14)
+    
+    # Entry conditions
+    # Long: bullishTrend and violationOccurred and doubleBottomFormed
+    
+    # Short: bearishTrend and violationOccurred and doubleTopFormed
+    
+    # Validate risk-reward ratio >= 3.0
+    # Execute trades when conditions align
+
+The double bottom logic mirrors the double top approach, checking for price recovery after testing a support level within the specified threshold. For positions, I need ATR-based stops placed below double bottoms for longs and above double tops for shorts, with targets set at structure extremes adjusted by the front-run distance. The key is ensuring both the stop and target are valid before calculating the risk-reward ratio, and only entering when the potential reward exceeds three times the risk. If the direction isn't specified, I'll treat it as long by default. For the timeframe conversion, since the trading window is 240 minutes and the execution is 60 minutes, I can resample the data to 240-minute intervals. The main challenge is managing the stateful variables used throughout—newStructureLow, newStructureHigh, outsideReturnHigh, outsideReturnLow, and the violation flags all persist across iterations and need to be maintained.
+
+When resampling for structure detection, the highest high and lowest low from the 4-hour period become the reference points, with the close being the final candle's close. The violation detection then operates on the execution timeframe, checking if price spikes through the resampled high but fails to close above it.
+
+For the double top/bottom detection, I'll work with the resampled 4-hour data to identify the patterns more cleanly. This means calculating the outside return candles and structure levels at the 4-hour resolution before checking for the specific spike-and-close conditions on the lower timeframe. Let me work through the implementation step by step.
+
+I need to import pandas and numpy, then set a default tick value of 0.0001. The function takes a dataframe with time, OHLCV columns and returns a list of trade dictionaries. First, I'll resample to 4-hour candles using the high, low, and close values, with the last close price of each period as the reference. Then I'll compute lower lows and higher highs to identify the structure. if lowerLowLowerClose:
+        newStructureLow = htfLow.iloc[i]
+        prevStructureLow = htfLow.iloc[i-1] if i > 0 else np.nan
+        outsideReturnHigh = htfHigh.iloc[i-2] if i >= 2 else np.nan
+        outsideReturnLow = htfLow.iloc[i-2] if i >= 2 else np.nan
+        outsideReturnClose = htfClose.iloc[i-2] if i >= 2 else np.nan
+        bearishTrend = True
+        bullishTrend = False
+
+For the bullish case, when we get a higher high and higher close, I'm capturing the structure similarly—the current high becomes the new reference point, and the previous high becomes the prior level. I also track the outside return candle from two bars back. The bullish trend flag gets set to True while bearish is reset.
+
+Now I need to continue with the violation detection logic, which checks whether price action violates these structure levels. entry3ZoneTop = outsideReturnHigh
+                entry3ZoneBottom = min(outsideReturnLow, outsideReturnClose)
+                violationOccurred = True
+                violationBar = i
+    
+    # Bullish violation (spike through low but close above)
+    if bullishTrend and not pd.isna(outsideReturnLow):
+        if df['low'].iloc[i] < outsideReturnLow and df['close'].iloc[i] >= outsideReturnLow:
+            if not violationOccurred or i != violationBar:
+                entry3ZoneBottom = outsideReturnLow
+                entry3ZoneTop = max(outsideReturnHigh, outsideReturnClose)
+                violationOccurred = True
+                violationBar = i
+    
+    # Double Top Detection (Bearish)
+    inEntry3Zone = False
+    if (bearishTrend or bullishTrend) and violationOccurred and not pd.isna(entry3ZoneTop):
+        inEntry3Zone = df['high'].iloc[i] >= entry3ZoneBottom and df['low'].iloc[i] <= entry3ZoneTop
+    
+    # Track double top formation
+    if bearishTrend and violationOccurred and inEntry3Zone:
+        # Initial test
+        if entry3ZoneBottom <= df['high'].iloc[i] <= entry3ZoneTop:
+            if pd.isna(doubleTopHigh) or i != lastDoubleTopBar:
+                doubleTopHigh = df['high'].iloc[i]
+                lastDoubleTopBar = i
+        
+        # Second test within lookback
+        elif not pd.isna(doubleTopHigh) and 0 < (i - lastDoubleTopBar) <= lookbackPeriod:
+            if abs(df['high'].iloc[i] - doubleTopHigh) <= (doubleTopHigh * violationThreshold):
+                doubleTopFormed = True
+            elif df['high'].iloc[i] > doubleTopHigh and df['close'].iloc[i] > doubleTopHigh:
+                doubleTopHigh = df['high'].iloc[i]
+                lastDoubleTopBar = i
+                doubleTopFormed = False
+            elif df['high'].iloc[i] > doubleTopHigh and df['close'].iloc[i] <= doubleTopHigh:
+                doubleTopHigh = df['high'].iloc[i]
+                lastDoubleTopBar = i
+    
+    # Double Bottom Detection (Bullish)
+    if bullishTrend and violationOccurred and inEntry3Zone:
+        if entry3ZoneBottom <= df['low'].iloc[i] <= entry3ZoneTop:
+            if pd.isna(doubleBottomLow) or i != lastDoubleBottomBar:
+                doubleBottomLow = df['low'].iloc[i]
+                lastDoubleBottomBar = i
+        
+        elif not pd.isna(doubleBottomLow) and 0 < (i - lastDoubleBottomBar) <= lookbackPeriod:
+            if abs(df['low'].iloc[i] - doubleBottomLow) <= (doubleBottomLow * violationThreshold):
+                doubleBottomFormed = True
+            elif df['low'].iloc[i] < doubleBottomLow and df['close'].iloc[i] < doubleBottomLow:
+                doubleBottomLow = df['low'].iloc[i]
+                lastDoubleBottomBar = i
+                doubleBottomFormed = False
+            elif df['low'].iloc[i] < doubleBottomLow and df['close'].iloc[i] >= doubleBottomLow:
+                doubleBottomLow = df['low'].iloc[i]
+                lastDoubleBottomBar = i
+    
+    # Calculate stop level
+    stopLevel = np.nan
+    if bearishTrend and doubleTopFormed and not pd.isna(doubleTopHigh):
+        stopLevel = doubleTopHigh + (atr[i] * atrMultiplier)
+    if bullishTrend and doubleBottomFormed and not pd.isna(doubleBottomLow):
+        stopLevel = doubleBottomLow - (atr[i] * atrMultiplier)
+    
+    # Calculate target level
+    targetLevel = np.nan
+    if bearishTrend and not pd.isna(newStructureLow):
+        targetLevel = newStructureLow - (targetFrontRun * tick * 10)
+    if bullishTrend and not pd.isna(newStructureHigh):
+        targetLevel = newStructureHigh + (targetFrontRun * tick * 10)
+    
+    # Entry conditions
+    close = df['close'].iloc[i]
+    
+    # Long condition
+    longCondition = (bullishTrend and violationOccurred and doubleBottomFormed and 
+                    not pd.isna(stopLevel) and not pd.isna(targetLevel))
+    
+    if longCondition:
+        risk = abs(close - stopLevel)
+        reward = abs(targetLevel - close)
+        if risk > 0:
+            rr = reward / risk
+            longCondition = rr >= 3.0
+    
+    # Short condition
+    shortCondition = (bearishTrend and violationOccurred and doubleTopFormed and 
+                     not pd.isna(stopLevel) and not pd.isna(targetLevel))
+    
+    if shortCondition:
+        risk = abs(close - stopLevel)
+        reward = abs(targetLevel - close)
+        if risk > 0:
+            rr = reward / risk
+            shortCondition = rr >= 3.0
+    
+    # Execute entry
+    if longCondition and not in_position:
+        direction = 'long'
+        entry_price = close
+        entries.append({
+            'trade_num': trade_num,
+            'direction': direction,
+            'entry_ts': ts,
+            'entry_time': entry_time,
+            'entry_price_guess': entry_price,
+            'exit_ts': 0,
+            'exit_time': '',
+            'exit_price_guess': 0.0,
+            'raw_price_a': entry_price,
+            'raw_price_b': entry_price
+        })
+        trade_num += 1
+        in_position = True
+        
+        # Reset flags
+        doubleBottomFormed = False
+        doubleBottomLow = np.nan
+        violationOccurred = False
+    
+    if shortCondition and not in_position:
+        direction = 'short'
+        entry_price = close
+        entries.append({
+            'trade_num': trade_num,
+            'direction': direction,
+            'entry_ts': ts,
+            'entry_time': entry_time,
+            'entry_price_guess': entry_price,
+            'exit_ts': 0,
+            'exit_time': '',
+            'exit_price_guess': 0.0,
+            'raw_price_a': entry_price,
+            'raw_price_b': entry_price
+        })
+        trade_num += 1
+        in_position = True
+        
+        # Reset flags
+        doubleTopFormed = False
+        doubleTopHigh = np.nan
+        violationOccurred = False
+
+I need to check the Pine Script code more carefully. The ATR calculation uses a multiplier of 1.0, and there are input parameters for targetFrontRun (2) and lookbackPeriod (5) that should be configurable. The long and short conditions both require a risk-reward ratio of at least 3.0, which means I need to compute the distance from entry to stop and from entry to target, then verify the ratio meets this threshold before executing the trade. if (bar_index - lastDoubleTopBar) > 0 and (bar_index - lastDoubleTopBar) <= lookbackPeriod
+        if math.abs(high - doubleTopHigh) <= (doubleTopHigh * violationThreshold)
+            doubleTopFormed := true
+
+The Pine Script checks whether the distance between the current high and previously recorded high stays within a threshold relative to the prior high value. The Python logic mirrors this by verifying the absolute difference between the current bar's high and the tracked double top high doesn't exceed the threshold percentage of that tracked level. This ensures the pattern forms when price repeatedly tests the same resistance without breaking through significantly.
+
+When price does break above the double top level and closes higher, the pattern invalidates and resets with the new high recorded as the starting point. Conversely, if price spikes above but fails to close above the level, the high updates but the pattern remains valid since the close confirms no breakout occurred.
+
+The key distinction is between an invalidation (close above) versus a valid update (spike without confirmation). The code also includes a guard checking `bar_index != lastDoubleTopBar` to prevent processing the same bar twice when initializing the double top high value.
+
+Let me trace through the specific scenarios:
+- When `na(doubleTopHigh)` is true, the first bar sets `doubleTopHigh = high`
+- On subsequent bars within the lookback window, if the high hasn't changed significantly (within threshold), `doubleTopFormed` triggers
+- A break and close above resets the pattern and updates the reference high
+- A spike without confirmation updates `doubleTopHigh` but keeps the pattern intact
+
+The logic captures the distinction between temporary spikes and genuine breaks through resistance levels. - bar 3: high updates to 1.015, lastDoubleTopBar = 3, doubleTopFormed stays False since close = 1.010 is below threshold
+
+The logic handles both scenarios correctly—when price spikes and closes above, it resets the pattern, and when it just spikes without closing above, it preserves the formation. My Python implementation mirrors this behavior, so the logic appears sound. Now I need to verify the resampling approach for the higher timeframe.
+
+Resampling to 240-minute candles using last-close aggregation means htfClose for any given candle represents the final close price. This creates a timing concern: when I detect a lower low and lower close pattern on candle i, I'm setting newStructureLow to htfLow[i], but that value represents the lowest point within the 240-minute window. The issue is that by the time I have the complete candle, some of that price action has already occurred within the period, so using it as a signal creates a look-ahead bias.
+
+The `lookahead=barmerge.lookahead_off` setting in the original code ensures each candle uses only the data available at that point in time, which is crucial for avoiding repainting. Since I'm aggregating already-formed candles in Python, I need to account for this by using the appropriate historical data rather than assuming the complete candle data is available at the moment the pattern triggers.
+
+For the double top and bottom detection, the logic works through examining individual bars within the 4-hour entry zone. The resampling approach should handle the structure detection properly—the first test sets the initial reference point (doubleTopHigh or doubleBottomLow), and subsequent tests within the lookback period check for pattern formation. The condition `if high >= entry3ZoneBottom and high <= entry3ZoneTop` identifies bars that fall within the defined zone boundaries for the pattern detection.
+
+The key insight is that `inEntry3Zone` is evaluated at each bar based on whether the current bar's range overlaps with the zone boundaries. This means a bar can qualify as an initial test even if it's already past the first touch point, as long as it remains within the zone. The logic correctly captures bars that touch the zone boundaries for both the initial touch and subsequent tests within the lookback window.
+
+Now implementing the solution: I need to import pandas and numpy for data manipulation, along with datetime utilities. The function will convert the input to a DataFrame with proper column names, resample to 4-hour intervals using the last close value, and prepare the structure for tracking higher timeframe highs and lows needed for the pattern detection. .iloc[j] > htf_high.iloc[j-1]
+    higher_close = htf_close.iloc[j] > htf_close.iloc[j-1]
+    higher_high_higher_close = higher_high and higher_close
+    
+    # Track structure levels
+    if lower_low_lower_close:
+        new_structure_low = htf_low.iloc[j]
+        prev_structure_low = htf_low.iloc[j-1] if j > 0 else np.nan
+        outside_return_high = htf_high.iloc[j-2] if j >= 2 else np.nan
+        outside_return_low = htf_low.iloc[j-2] if j >= 2 else np.nan
+        outside_return_close = htf_close.iloc[j-2] if j >= 2 else np.nan
+        bearish_trend = True
+        bullish_trend = False
+
+When higher highs and higher closes appear, I'm tracking the structure high along with the previous high value and the corresponding outside return candle data from two periods back. The bullish trend flag gets set to True while bearish gets reset.
+
+For the higher timeframe structure identification, I need to compare each 4H candle against the previous one to detect higher highs and closes. When this pattern emerges, I capture the current high as the new structure point, pull the prior high, and record the outside return candle details from two bars back. The bullish trend state is updated accordingly.
+
+Now I'm moving into violation detection—checking whether price spikes through the identified structure levels but fails to close beyond them. This requires tracking whether we're in a bullish or bearish context, then comparing the current bar's spike against the outside return high or low while ensuring the close doesn't confirm the breach. violationBar = i
+    
+    # Bullish violation (spike through low but close above)
+    if bullish_trend and not pd.isna(outside_return_low):
+        if df['low'].iloc[i] < outside_return_low and df['close'].iloc[i] >= outside_return_low:
+            if not violationOccurred or i != violationBar:
+                entry3ZoneBottom = outside_return_low
+                entry3ZoneTop = max(outside_return_high, outside_return_close)
+                violationOccurred = True
+                violationBar = i
+    
+    # Check if price is testing Entry 3 zone
+    inEntry3Zone = False
+    if (bearish_trend or bullish_trend) and violationOccurred and not pd.isna(entry3ZoneTop):
+        inEntry3Zone = df['high'].iloc[i] >= entry3ZoneBottom and df['low'].iloc[i] <= entry3ZoneTop
+    
+    # Double Top Detection (Bearish)
+    if bearish_trend and violationOccurred and inEntry3Zone:
+        # Look for initial test in zone
+        if entry3ZoneBottom <= df['high'].iloc[i] <= entry3ZoneTop:
+            if pd.isna(doubleTopHigh) or i != lastDoubleTopBar:
+                doubleTopHigh = df['high'].iloc[i]
+                lastDoubleTopBar = i
+        
+        # Look for second test (within lookback period)
+        elif not pd.isna(doubleTopHigh) and (i - lastDoubleTopBar) > 0 and (i - lastDoubleTopBar) <= lookbackPeriod:
+            if abs(df['high'].iloc[i] - doubleTopHigh) <= (doubleTopHigh * violationThreshold):
+                doubleTopFormed = True
+            elif df['high'].iloc[i] > doubleTopHigh and df['close'].iloc[i] > doubleTopHigh:
+                doubleTopHigh = df['high'].iloc[i]
+                lastDoubleTopBar = i
+                doubleTopFormed = False
+            elif df['high'].iloc[i] > doubleTopHigh and df['close'].iloc[i] <= doubleTopHigh:
+                doubleTopHigh = df['high'].iloc[i]
+                lastDoubleTopBar = i
+    
+    # Double Bottom Detection (Bullish)
+    if bullish_trend and violationOccurred and inEntry3Zone:
+        # Look for initial test in zone
+        if entry3ZoneBottom <= df['low'].iloc[i] <= entry3ZoneTop:
+            if pd.isna(doubleBottomLow) or i != lastDoubleBottomBar:
+                doubleBottomLow = df['low'].iloc[i]
+                lastDoubleBottomBar = i
+        
+        # Look for second test (within lookback period)
+        elif not pd.isna(doubleBottomLow) and (i - lastDoubleBottomBar) > 0 and (i - lastDoubleBottomBar) <= lookbackPeriod:
+            if abs(df['low'].iloc[i] - doubleBottomLow) <= (doubleBottomLow * violationThreshold):
+                doubleBottomFormed = True
+            elif df['low'].iloc[i] < doubleBottomLow and df['close'].iloc[i] < doubleBottomLow:
+                doubleBottomLow = df['low'].iloc[i]
+                lastDoubleBottomBar = i
+                doubleBottomFormed = False
+            elif df['low'].iloc[i] < doubleBottomLow and df['close'].iloc[i] >= doubleBottomLow:
+                doubleBottomLow = df['low'].iloc[i]
+                lastDoubleBottomBar = i
+    
+    # ATR for stops
+    atr = compute_wilder_atr(df['high'], df['low'], df['close'], atrLength)
+    
+    # Calculate stop level
+    stopLevel = np.nan
+    if bearish_trend and doubleTopFormed and not pd.isna(doubleTopHigh):
+        stopLevel = doubleTopHigh + (atr[i] * atrMultiplier)
+    if bullish_trend and doubleBottomFormed and not pd.isna(doubleBottomLow):
+        stopLevel = doubleBottomLow - (atr[i] * atrMultiplier)
+    
+    # Calculate target level
+    targetLevel = np.nan
+    if bearish_trend and not pd.isna(new_structure_low):
+        targetLevel = new_structure_low - pipsToPrice(targetFrontRun)
+    if bullish_trend and not pd.isna(new_structure_high):
+        targetLevel = new_structure_high + pipsToPrice(targetFrontRun)
+    
+    # Entry conditions
+    close = df['close'].iloc[i]
+    
+    # Long condition
+    longCondition = bullish_trend and violationOccurred and doubleBottomFormed and not pd.isna(stopLevel) and not pd.isna(targetLevel)
+    if longCondition:
+        risk = abs(close - stopLevel)
+        reward = abs(targetLevel - close)
+        if risk > 0:
+            rr = reward / risk
+            longCondition = rr >= 3.0
+    
+    # Short condition
+    shortCondition = bearish_trend and violationOccurred and doubleTopFormed and not pd.isna(stopLevel) and not pd.isna(targetLevel)
+    if shortCondition:
+        risk = abs(close - stopLevel)
+        reward = abs(targetLevel - close)
+        if risk > 0:
+            rr = reward / risk
+            shortCondition = rr >= 3.0
+    
+    # Execute trades
+    if longCondition and strategy.position_size == 0:
+        strategy.entry("Long", strategy.long)
+        strategy.exit("TP", "Long", limit=targetLevel, stop=stopLevel)
+        doubleBottomFormed = False
+        doubleBottomLow = np.nan
+        violationOccurred = False
+    
+    if shortCondition and strategy.position_size == 0:
+        strategy.entry("Short", strategy.short)
+        strategy.exit("TP", "Short", limit=targetLevel, stop=stopLevel)
+        doubleTopFormed = False
+        doubleTopHigh = np.nan
+        violationOccurred = False
+
+I need to complete the ATR function definition that appears earlier in the script. The function calculates True Range using the high-low difference, then applies Wilder's smoothing method across the specified period to derive the average true range value.
+
+Then I should finalize the return statement at the end and include any necessary docstring information. Looking back at the requirements, I need to ensure the function signature matches exactly, set raw_price_a and raw_price_b equal to entry_price_guess, and establish trade_num starting from 1 with proper increments. Let me construct the complete function now.
+
+One issue I'm noticing: when tracking structure lows and highs, the code references htfLow[1] and htfHigh[1] at the current index j. This means the value from the previous 4H candle is being used for comparison at index j. When j=0, these previous values don't exist. In Pine Script this would return na, but in Python when resampling to create htf_low as a Series, the first element has no prior value to reference, so I need to handle this boundary case properly.
+
+I should also verify that the "time" column contains Unix timestamps as integers, since the function expects timestamps in that format to convert them back to datetime objects. The function will return a list of dictionaries with the extracted price data.
+
+Regarding the state variables like `newStructureLow` and `outsideReturnHigh`, they're initialized as NaN and reset after each trade, so they naturally start with NaN values. The `violationOccurred` flag works the same way—starting as False and remaining False until a violation is detected. I need to ensure ATR is computed across all bars in advance so the indicator values are available when checking entry conditions, since the Pine Script calculates ATR before evaluating the entry logic.
+
+For the resampling approach, using the last close price of each 4H period represents the closing value for that timeframe, which aligns with how the higher timeframe data is being pulled.
+
+The structure detection logic compares each 4H candle's high and low against the previous one to identify lower lows and lower closes (bearish) or higher highs and higher closes (bullish). When these conditions are met, the new structure level gets set to the current candle's low or high, and the outside return values are pulled from two candles back to capture the broader context.
+
+For the violations, the code checks if price spikes through a prior level but fails to close beyond it—bearish violations look for highs exceeding the outside return high while closes stay below it, and bullish violations check for lows dropping below the outside return low with closes remaining above. The zone boundaries get defined based on which direction the violation occurred.
+
+The double top and bottom detection works by first establishing whether we're in the entry zone, then tracking the initial touch point and monitoring for a second test within the lookback window. If the price forms a similar high or low within that timeframe, the pattern is confirmed.
+
+For the ATR calculation, I'm using Wilder's smoothing method where the initial ATR is a simple average of the true range values, then each subsequent ATR is calculated by taking the previous ATR multiplied by the period minus one, plus the current true range, all divided by the period. This creates the exponential-like smoothing that Wilder's method provides.
+
+Now for the double top and bottom detection, the logic needs to handle both initial tests and subsequent tests differently. When it's the first test of the zone, the code checks if we're within the zone boundaries—if so, it initializes the double top or bottom high/low to the current bar's value and records the bar index. If we're already tracking a double pattern and we're within the lookback period, it compares the current bar's price action against the recorded high/low to determine if the pattern is valid. high
+    elif high > doubleTopHigh and close <= doubleTopHigh:
+        # Spike but no close above - still valid, update high
+        doubleTopHigh = high
+        lastDoubleTopBar = bar_index
+
+This handles the case where price spikes above the previous high but closes below it, so the double top pattern remains intact and I update the tracked high. The Python version correctly mirrors this logic.
+
+For the double bottom, I'm doing the same thing in reverse—tracking when price tests a low level twice within the lookback period to confirm the pattern, resetting if price breaks below and closes below, and updating the tracked low if there's a spike that recovers. True
+
+In the Python version:
+if abs(low - doubleBottomLow) <= (doubleBottomLow * violationThreshold):
+    doubleBottomFormed = True
+
+The threshold comparison aligns with the Pine Script logic—both check whether the absolute difference between the current low and tracked low stays within the acceptable range relative to the tracked low itself. The implementation appears consistent.
+
+Let me verify the resampling approach one more time. The execution uses `request.security` on the 60-minute timeframe, meaning structure detection happens on the 4H candles while condition checking occurs on individual bars. When a lower low and lower close form on a 4H candle, newStructureLow captures that candle's low value, and prevStructureLow takes the previous candle's low. outsideReturnHigh pulls from two candles back, which represents the high of the outside return candle. This aligns with how the higher timeframe data feeds into the strategy.
+
+For the Python implementation, resampling to 4H candles and applying the same comparison logic should replicate this behavior. I need to add one more consideration: the code references `high[bar_index - violationBar]` for the label position, but in Python I'll work with the index directly. The conversion appears solid.
+
+Now I should write out the complete function. There may be additional logic to incorporate based on the rest of the Pine Script. 0 and (bar_index - lastDoubleTopBar) <= lookbackPeriod
+        if math.abs(high - doubleTopHigh) <= (doubleTopHigh * violationThreshold)
+            doubleTopFormed := true
+        else if high > doubleTopHigh and close > doubleTopHigh
+            doubleTopHigh := high
+            lastDoubleTopBar := bar_index
+            doubleTopFormed := false
+        else if high > doubleTopHigh and close <= doubleTopHigh
+            doubleTopHigh := high
+            lastDoubleTopBar := bar_index
+
+For the short side, I'm checking if price exceeds the tracked high without closing above it—if so, the pattern remains valid but I update the reference point. The long side mirrors this logic in reverse. The double top detection uses a similar threshold-based approach to validate the pattern formation.
+
+When price spikes through the double bottom level but recovers, I update the tracked low to maintain the formation. Then after evaluating both patterns, I calculate the ATR for stop placement and determine target levels based on the new structure extremes, using the front-run parameter to set the actual target distance.
+
+For stop levels, I place them beyond the double pattern using the ATR multiplier—above for bearish setups and below for bullish ones. Finally, I compute the risk-reward ratio by dividing the potential reward (distance from entry to target) by the risk (distance from entry to stop), ensuring both levels are valid before calculating. Looking at the code structure, the stop and target levels get calculated first, then the conditions check if both are valid before computing the risk-reward ratio. The issue is that risk and reward need to be calculated within the condition blocks anyway—if the ratio fails the threshold, the trade shouldn't execute. So I can combine the calculations: check that stop and target exist, compute risk as the absolute difference between close and stop, calculate reward from the target, then validate the ratio is at least 3.0 before allowing the long entry. The same logic applies for short positions.
+
+When executing, I should only enter if no position is currently open, then record the entry timestamp, price, and direction while initializing the exit fields to zero or empty strings. After a trade triggers, the pattern detection flags need to reset so the same setup doesn't trigger again on the next bar.
+
+One thing to verify: the outsideReturn candle (index i-2) must exist for the structure detection logic to work properly. The code checks `if lowerLowLowerClose` which confirms both the lower low and lower close conditions are met, so the data should be available. But I need to ensure the resampled 4H data has enough historical bars to reference when calculating these values.
+
+The `lookahead=barmerge.lookahead_off` parameter in request.security means the current bar can only use confirmed data from prior bars, not forward-looking information. In the Python implementation, I should ensure at least 2 prior candles exist before checking for this pattern, or handle the missing data gracefully. The validation check `if not pd.isna(new_structure_low)` ensures the strategy only activates when valid structure exists, so I need to account for edge cases where historical data might be insufficient. structure_low = htf_low.iloc[j]
+            prev_structure_low = htf_low.iloc[j-1] if j > 0 else np.nan
+            outside_return_high = htf_high.iloc[j-2] if j >= 2 else np.nan
+            outside_return_low = htf_low.iloc[j-2] if j >= 2 else np.nan
+            outside_return_close = htf_close.iloc[j-2] if j >= 2 else np.nan
+            bearish_trend = True
+            bullish_trend = False
+
+The structure detection requires checking `j >= 2` to ensure we have enough history. For the entry zone violation check, I'm using the outside_return values with a `pd.isna()` guard to safely handle cases where they might not be populated yet.
+
+Now I need to reconsider how bullish violations are detected. The condition checks if the low dips below the outside_return_low while the close stays at or above it—this catches spikes that penetrate the low but don't close below. However, I should verify the zone boundaries are being set correctly from the outside_return data.
+
+For bearish violations, the zone gets defined as the range between the outside_return_high and the minimum of outside_return_low and outside_return_close. For bullish violations, it's the range between outside_return_low and the maximum of outside_return_high and outside_return_close. I need to ensure these bounds are properly initialized based on which direction the violation occurs. (atr * atrMultiplier)
+
+// Bullish: Check for violation of outside return low
+// Violation = spike through but don't close below
+if bullishTrend and not na(outsideReturnLow)
+    if low < outsideReturnLow and close >= outsideReturnLow
+        if not violationOccurred or bar_index != violationBar
+            violationOccurred := true
+            violationBar := bar_index
+            // Zone is from highest close to highest high of outside return candle
+            entry3ZoneBottom := outsideReturnLow
+            entry3ZoneTop := math.max(outsideReturnHigh, outsideReturnClose)
+
+In the bullish case, when price spikes below the outside return low but recovers to close above it, I'm setting the zone boundaries accordingly. The bottom aligns with the outside return low, while the top extends to whichever is higher between the outside return high and the outside return close. This captures the full range of the candlestick pattern.
+
+For the double top and bottom logic, I need to verify the detection is working correctly across both directions. The pattern requires price testing the same level twice within the lookback window, with specific conditions for when a pattern is confirmed versus when it's invalidated or updated. The logic handles the spike scenario correctly—when price moves above the tracked level but closes back below, it maintains the formation while updating the reference point.
+
+For the bearish case with double bottom, the pattern requires price testing a similar low twice within the lookback window. If price breaks below the tracked low and closes beneath it, the formation resets with a new low. However, if price only spikes lower without closing below, the pattern remains intact and updates the tracked level. The condition checks whether the absolute difference between the current low and the tracked low stays within the violation threshold to confirm the formation. high and higher close
+higherHighHigherClose = higherHigh and higherClose
+
+// Track structure levels
+if lowerLowLowerClose
+    newStructureLow := htfLow
+    prevStructureLow := htfLow[1]
+    ...
+
+`htfLow` refers to the current bar's low

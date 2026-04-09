@@ -1,0 +1,1 @@
+long_condition = long_condition_val and (Filt2 > TriggerE2PSS) and (trendilo_dir == 1) and basicLongCondition_TTMS

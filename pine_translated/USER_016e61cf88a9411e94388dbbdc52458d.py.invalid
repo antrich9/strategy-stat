@@ -1,0 +1,2 @@
+body_size_candle3 = abs(df['close'] - df['open']) >= (abs(df['high'] - df['low']) * bodySizePercentageCandle3 / 100)
+  body_size_candle1 = abs(df['close'].shift(2) - df['open'].shift(2)) >= (abs(df['high'].shift(2) - df['low'].shift(2)) * bodySizePercentageCandle1 / 100)

@@ -1,0 +1,9 @@
+def compute_pivot_low(low, period):
+    rolling_min = low.rolling(period*2+1, center=True).min()
+    pivot = low.where(low == rolling_min)
+    return pivot.ffill()
+
+def compute_pivot_high(high, period):
+    rolling_max = high.rolling(period*2+1, center=True).max()
+    pivot = high.where(high == rolling_max)
+    return pivot.ffill()

@@ -1,0 +1,140 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    
+    # Copy to avoid modifying original
+    df = df.copy()
+    
+    # Volume filter: volume > SMA(volume, 9) * 1.5
+    sma_vol = df['volume'].rolling(window=9).mean()
+    volfilt = df['volume'] > sma_vol * 1.5
+    
+    # ATR filter: ATR(20) / 1.5
+    tr = np.maximum(
+        df['high'] - df['low'],
+        np.maximum(
+            np.abs(df['high'] - df['close'].shift(1)),
+            np.abs(df['low'] - df['close'].shift(1))
+        )
+    )
+    atr = tr.ewm(span=20, adjust=False).mean()
+    atrfilt = (df['low'] - df['high'].shift(2) > atr/1.5) | (df['low'].shift(2) - df['high'] > atr/1.5)
+    
+    # Trend filter: SMA(close, 54) > SMA(close, 54)[1]
+    sma54 = df['close'].rolling(window=54).mean()
+    locfiltb = sma54 > sma54.shift(1)
+    locfilts = sma54 < sma54.shift(1)
+    
+    # Bullish FVG: low > high[2] with filters
+    bfvg = (df['low'] > df['high'].shift(2)) & volfilt & atrfilt & locfiltb
+    
+    # Bearish FVG: high < low[2] with filters
+    sfvg = (df['high'] < df['low'].shift(2)) & volfilt & atrfilt & locfilts
+    
+    # Previous day high/low (approximate using rolling max/min with 24 periods)
+    prev_day_high = df['high'].rolling(window=24, min_periods=1).max().shift(1)
+    prev_day_low = df['low'].rolling(window=24, min_periods=1).min().shift(1)
+    
+    # Order block detection
+    is_up = df['close'] > df['open']
+    is_down = df['close'] < df['open']
+    
+    ob_up = is_down.shift(1) & is_up & (df['close'] > df['high'].shift(1))
+    ob_down = is_up.shift(1) & is_down & (df['close'] < df['low'].shift(1))
+    
+    # Sweep conditions
+    sweep_low = df['low'] < prev_day_low
+    sweep_high = df['high'] > prev_day_high
+    
+    # Entry conditions
+    long_condition = sweep_low & ob_up & bfvg
+    short_condition = sweep_high & ob_down & sfvg
+    
+    # Generate entries
+    entries = []
+    trade_num = 1
+    
+    for i in range(1, len(df)):
+        if long_condition.iloc[i]:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': int(df['time'].iloc[i]),
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                'entry_price_guess': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': df['close'].iloc[i],
+                'raw_price_b': df['close'].iloc[i]
+            })
+            trade_num += 1
+        elif short_condition.iloc[i]:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': int(df['time'].iloc[i]),
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                'entry_price_guess': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': df['close'].iloc[i],
+                'raw_price_b': df['close'].iloc[i]
+            })
+            trade_num += 1
+    
+    return entries
+
+I need to reconsider the ATR calculation. The Pine Script uses `ta.atr(20) / 1.5`, which gives a threshold value. My condition checks if the gap between the current low and the high two bars back exceeds this threshold. The ATR should be computed correctly as a Wilder smoothed average of true ranges before dividing by 1.5.
+
+For the volume filter, the script simply checks if volume exceeds 1.5 times its 9-bar SMA. The trend filter uses a 54-bar SMA on close prices and compares it to its prior value to determine direction. All three filters need to align for the entry signals to trigger. .rolling(window=24, min_periods=1).min().shift(1)
+    
+    # Order block detection
+    is_up = df['close'] > df['open']
+    is_down = df['close'] < df['open']
+    
+    ob_up = is_down.shift(1) & is_up & (df['close'] > df['high'].shift(1))
+    ob_down = is_up.shift(1) & is_down & (df['close'] < df['low'].shift(1))
+    
+    # Sweep conditions
+    sweep_low = df['low'] < prev_day_low
+    sweep_high = df['high'] > prev_day_high
+    
+    # Entry conditions
+    long_condition = sweep_low & ob_up & bfvg
+    short_condition = sweep_high & ob_down & sfvg
+
+I'm detecting order blocks by checking for up and down candles, then identifying when a candle closes beyond the prior candle's range. Sweeps occur when price breaks through the previous day's high or low, and I combine these conditions with the fair value gap signals to generate entry signals. if short_condition.iloc[i]:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': int(df['time'].iloc[i]),
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                'entry_price_guess': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': df['close'].iloc[i],
+                'raw_price_b': df['close'].iloc[i]
+            })
+            trade_num += 1
+    
+    return entries
+
+I need to reconsider how the previous day high and low are being calculated. The security function call retrieves daily data shifted back by one bar, but since we're working with intraday data, I can't directly access daily values. Using a rolling window approximation with a 24-bar lookback might not capture the actual previous day boundaries accurately. Let me trace through what the Pine Script is actually doing with these daily security calls to understand the correct approach. I need to reconsider how to estimate previous day levels with only intraday data available. Using a rolling 24-bar high/low makes sense as a practical approximation for the previous day's range.
+
+For the implementation, I'll calculate ATR using Wilder's method with exponential weighted moving average (span=20, adjust=False), then compute the volume SMA and FVG conditions accordingly.

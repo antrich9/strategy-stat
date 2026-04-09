@@ -1,0 +1,5 @@
+# Bullish FVG: current low > previous high (gap up)
+bullish_fvg = df['low'] > df['high'].shift(1)
+
+# Bearish FVG: current high < previous low (gap down)
+bearish_fvg = df['high'] < df['low'].shift(1)

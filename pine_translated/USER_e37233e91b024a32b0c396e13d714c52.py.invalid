@@ -1,0 +1,15 @@
+def alma_series(s, length, offset=0.85, sigma=6):
+    # s is pd.Series
+    # compute weight vector
+    k = np.arange(length)
+    delay = (length - 1) * offset
+    w = np.exp(-((k - delay)**2) / (2 * sigma**2))
+    w /= np.sum(w)  # normalize
+    # compute weighted moving average using convolve or rolling
+    # Use pd.Series.rolling with win_type='foo'? Not support. So manually.
+    result = pd.Series(index=s.index, dtype=float)
+    # pad left with NaN for first length-1 bars
+    for i in range(length - 1, len(s)):
+        window = s.iloc[i - length + 1: i + 1].values
+        result.iloc[i] = np.dot(w, window)
+    return result

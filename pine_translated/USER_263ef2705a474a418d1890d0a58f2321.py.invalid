@@ -1,0 +1,162 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    entries = []
+    trade_num = 1
+
+    if len(df) < 10:
+        return entries
+
+    # Parameters from Pine Script
+    threshold_multiplier = 3
+    depth = 10
+
+    # Calculate ATR ( Wilder RSI implementation )
+    high = df['high']
+    low = df['low']
+    close_prices = df['close']
+
+    tr1 = high - low
+    tr2 = (high - close_prices.shift(1)).abs()
+    tr3 = (low - close_prices.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+    atr = tr.ewm(alpha=1.0/10, adjust=False).mean()
+
+    # Deviation threshold
+    dev_threshold = atr / close_prices * 100 * threshold_multiplier
+
+    # ZigZag implementation using rolling max/min with deviation
+    zigzag_high = pd.Series(np.nan, index=df.index)
+    zigzag_low = pd.Series(np.nan, index=df.index)
+    last_pivot_high = np.nan
+    last_pivot_low = np.nan
+    last_pivot_high_idx = -1
+    last_pivot_low_idx = -1
+
+    for i in range(depth, len(df)):
+        if i - last_pivot_high_idx >= depth:
+            lookback_high = high.iloc[last_pivot_high_idx+1:i+1] if last_pivot_high_idx >= 0 else high.iloc[:i+1]
+            local_high_idx = lookback_high.idxmax()
+            if pd.notna(last_pivot_low) and high.iloc[i] <= last_pivot_low:
+                pass
+            else:
+                if high.iloc[i] > lookback_high.max() - dev_threshold.iloc[i]:
+                    zigzag_high.iloc[i] = high.iloc[i]
+                    last_pivot_high = high.iloc[i]
+                    last_pivot_high_idx = i
+
+        if i - last_pivot_low_idx >= depth:
+            lookback_low = low.iloc[last_pivot_low_idx+1:i+1] if last_pivot_low_idx >= 0 else low.iloc[:i+1]
+            local_low_idx = lookback_low.idxmin()
+            if pd.notna(last_pivot_high) and low.iloc[i] >= last_pivot_high:
+                pass
+            else:
+                if low.iloc[i] < lookback_low.min() + dev_threshold.iloc[i]:
+                    zigzag_low.iloc[i] = low.iloc[i]
+                    last_pivot_low = low.iloc[i]
+                    last_pivot_low_idx = i
+
+    # Detect crossover at 0.382 level using rolling window for last 2 pivots
+    fib_level = 0.382
+    lastP_start_price = np.nan
+    lastP_end_price = np.nan
+    lastP_start_idx = -1
+    lastP_end_idx = -1
+
+    # Track recent pivots
+    pivots_high_idx = []
+    pivots_high_val = []
+    pivots_low_idx = []
+    pivots_low_val = []
+
+    for i in range(len(df)):
+        if pd.notna(zigzag_high.iloc[i]):
+            pivots_high_idx.append(i)
+            pivots_high_val.append(zigzag_high.iloc[i])
+        if pd.notna(zigzag_low.iloc[i]):
+            pivots_low_idx.append(i)
+            pivots_low_val.append(zigzag_low.iloc[i])
+
+    # Build pivot pairs
+    all_pivots = []
+    for idx, val in zip(pivots_high_idx, pivots_high_val):
+        all_pivots.append((idx, val, 'high'))
+    for idx, val in zip(pivots_low_idx, pivots_low_val):
+        all_pivots.append((idx, val, 'low'))
+    all_pivots.sort()
+
+    # Calculate Fibonacci levels for each pivot pair
+    for k in range(len(all_pivots) - 1):
+        idx1, val1, type1 = all_pivots[k]
+        idx2, val2, type2 = all_pivots[k + 1]
+
+        if type1 == 'high' and type2 == 'low':
+            start_price = val1
+            end_price = val2
+        elif type1 == 'low' and type2 == 'high':
+            start_price = val1
+            end_price = val2
+        else:
+            continue
+
+        direction = 1 if start_price > end_price else -1
+        height = direction * abs(start_price - end_price)
+
+        fib_price = start_price + height * fib_level
+
+        # Check crossover
+        if k > 0:
+            prev_idx1, prev_val1, prev_type1 = all_pivots[k - 1]
+            prev_idx2, prev_val2, prev_type2 = all_pivots[k]
+
+            if prev_type1 == 'high' and prev_type2 == 'low':
+                prev_start = prev_val1
+                prev_end = prev_val2
+            elif prev_type1 == 'low' and prev_type2 == 'high':
+                prev_start = prev_val1
+                prev_end = prev_val2
+            else:
+                prev_fib = np.nan
+            else:
+                prev_fib = prev_start + (1 if prev_start > prev_end else -1) * abs(prev_start - prev_end) * fib_level
+        else:
+            prev_fib = np.nan
+
+        # Crossover detection: price crosses fib level
+        for i in range(idx2, min(idx2 + depth, len(df))):
+            if pd.notna(prev_fib):
+                current_cross = (close_prices.iloc[i] > fib_price and close_prices.iloc[i] < prev_fib) or \
+                               (close_prices.iloc[i] < fib_price and close_prices.iloc[i] > prev_fib)
+                prev_cross = (close_prices.iloc[i-1] > fib_price and close_prices.iloc[i-1] < prev_fib) or \
+                             (close_prices.iloc[i-1] < fib_price and close_prices.iloc[i-1] > prev_fib)
+                if current_cross and not prev_cross:
+                    entries.append({
+                        'trade_num': trade_num,
+                        'direction': 'long' if direction > 0 else 'short',
+                        'entry_ts': int(df['time'].iloc[i]),
+                        'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                        'entry_price_guess': close_prices.iloc[i],
+                        'exit_ts': 0,
+                        'exit_time': '',
+                        'exit_price_guess': 0.0,
+                        'raw_price_a': fib_price,
+                        'raw_price_b': fib_price
+                    })
+                    trade_num += 1
+                    break
+
+    return entries

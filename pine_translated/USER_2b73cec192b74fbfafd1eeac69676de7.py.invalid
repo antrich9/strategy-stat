@@ -1,0 +1,10 @@
+swing_length = 7
+window = 2 * swing_length + 1  # 15
+
+# Compute rolling max and min
+high_rolling_max = high.rolling(window=window, center=True).max()
+low_rolling_min = low.rolling(window=window).min()
+
+# Identify pivot high: high == rolling max (and maybe not NaN)
+SH = high.where(high == high_rolling_max, np.nan)
+SL = low.where(low == low_rolling_min, np.nan)

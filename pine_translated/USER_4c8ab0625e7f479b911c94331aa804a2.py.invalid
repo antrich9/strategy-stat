@@ -1,0 +1,6 @@
+# PP = 7
+# HighPivot[i] = True if high[i] is the max of high[i-7:i+8] (window of 15 centered on i, but excluding current? No, pivothigh looks at PP left and PP right).
+# Actually, `ta.pivothigh(7, 7)` means it looks back 7 bars and forward 7 bars. So at bar `i`, it checks if `high[i]` > `high[i-7..i-1]` and `high[i]` >= `high[i+1..i+7]`.
+# Note: Pine is inclusive for the current bar in the range?
+# Pine: `ta.pivothigh(source, leftbars, rightbars)` -> highest high in the last `leftbars` bars, excluding current? No, usually includes current or checks current vs past.
+# The provided snippet uses `HighPivot` as a boolean.

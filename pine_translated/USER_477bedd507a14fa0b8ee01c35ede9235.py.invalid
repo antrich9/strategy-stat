@@ -1,0 +1,13 @@
+def resample_htf(df, resolution_sec):
+    # resolution_sec: seconds for HTF (e.g., 240*60)
+    df = df.copy()
+    df['htf_idx'] = df['time'] // resolution_sec
+    htf_df = df.groupby('htf_idx').agg(
+        htf_c=('close', 'last'),
+        htf_h=('high', 'max'),
+        htf_l=('low', 'min')
+    )
+    # Map back to original bars: each original bar gets htf values for its period.
+    df['htf_idx'] = df['time'] // resolution_sec
+    df = df.merge(htf_df, left_on='htf_idx', right_index=True, how='left')
+    return df

@@ -1,0 +1,153 @@
+import pandas as pd
+    import numpy as np
+    from datetime import datetime, timezone
+
+    def generate_entries(df: pd.DataFrame) -> list:
+        # Copy df to avoid modifying original
+        data = df.copy()
+        
+        # Constants
+        ENTRY_PIPS = 3.0
+        ATR_LENGTH = 14
+        ADX_LENGTH = 14
+        ADX_THRESHOLD = 20.0
+        VOL_SMA_LEN = 20
+        MIN_VOL_MULT = 1.2
+        MINTICK = 0.0001 # Assumption
+        
+        # 1. Date handling
+        data['dt'] = pd.to_datetime(data['time'], unit='s')
+        data['date'] = data['dt'].dt.date
+        
+        # 2. Calculate Previous Day High/Low
+        daily_agg = data.groupby('date')['high', 'low'].max().reset_index()
+        daily_agg.columns = ['date', 'day_high', 'day_low']
+        
+        # Shift to get Previous Day's values for Today
+        daily_agg['prev_day_high'] = daily_agg['day_high'].shift(1)
+        daily_agg['prev_day_low'] = daily_agg['day_low'].shift(1)
+        
+        data = data.merge(daily_agg[['date', 'prev_day_high', 'prev_day_low']], on='date', how='left')
+        
+        # 3. Indicators
+        # Wilder ATR
+        tr1 = data['high'] - data['low']
+        tr2 = abs(data['high'] - data['close'].shift(1))
+        tr3 = abs(data['low'] - data['close'].shift(1))
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.ewm(alpha=1/ATR_LENGTH, adjust=False).mean()
+        
+        # ADX (DMI)
+        high_diff = data['high'] - data['high'].shift(1)
+        low_diff = data['low'].shift(1) - data['low']
+        
+        plus_dm = high_diff.copy()
+        plus_dm[high_diff <= low_diff] = 0
+        
+        minus_dm = low_diff.copy()
+        minus_dm[low_diff <= high_diff] = 0
+        
+        # Smooth DMs
+        smooth_plus_dm = plus_dm.ewm(alpha=1/ADX_LENGTH, adjust=False).mean()
+        smooth_minus_dm = minus_dm.ewm(alpha=1/ADX_LENGTH, adjust=False).mean()
+        
+        di_plus = 100 * (smooth_plus_dm / atr)
+        di_minus = 100 * (smooth_minus_dm / atr)
+        
+        dx = 100 * abs(di_plus - di_minus) / (di_plus + di_minus)
+        adx = dx.ewm(alpha=1/ADX_LENGTH, adjust=False).mean()
+        
+        # Volume
+        vol_sma = data['volume'].rolling(VOL_SMA_LEN).mean()
+        is_high_volume = data['volume'] > (vol_sma * MIN_VOL_MULT)
+        
+        # 4. Entry Levels
+        pip_offset = ENTRY_PIPS * 10 * MINTICK
+        buy_point = data['prev_day_high'] + pip_offset
+        sell_point = data['prev_day_low'] - pip_offset
+        
+        # 5. Conditions
+        new_day = data['date'] != data['date'].shift(1)
+        new_day.iloc[0] = True # First row usually counts as start of data
+        
+        # Re-calculate buy_point shift for the "Candle Close" condition
+        # buy_point_prev is previous bar's buy_point
+        buy_point_prev = buy_point.shift(1)
+        sell_point_prev = sell_point.shift(1)
+        
+        # Note: Pine checks `close > buyPoint[1]` (prev bar's value)
+        # We check it on the bar *after* newDay?
+        # Pine: `if newDay { if requireCandleClose { cond := cond and close > buyPoint[1] } }`
+        # `buyPoint[1]` is previous bar.
+        # If we are at newDay bar (i), buyPoint is calculated using prevDayHigh.
+        # buyPoint[i-1] is calculated using prevDayHigh (same value, usually).
+        # So we can use buy_point.shift(1).
+        
+        bullish_cond = (
+            (data['close'] > buy_point) & 
+            (data['close'] > data['prev_day_high']) & 
+            (adx > ADX_THRESHOLD) & 
+            is_high_volume &
+            (data['close'] > buy_point_prev) # requireCandleClose
+        )
+        
+        bearish_cond = (
+            (data['close'] < sell_point) & 
+            (data['close'] < data['prev_day_low']) & 
+            (adx > ADX_THRESHOLD) & 
+            is_high_volume &
+            (data['close'] < sell_point_prev) # requireCandleClose
+        )
+        
+        # 6. Iteration
+        entries = []
+        trade_num = 1
+        in_trade = False # To mimic strategy.position_size == 0
+        
+        # Iterate
+        for i in range(len(data)):
+            # Skip if NaN in indicators
+            if pd.isna(adx.iloc[i]) or pd.isna(is_high_volume.iloc[i]) or pd.isna(buy_point.iloc[i]):
+                continue
+                
+            # Check new day
+            if new_day.iloc[i] and not in_trade:
+                if bullish_cond.iloc[i]:
+                    ts = data['time'].iloc[i]
+                    entry_time_str = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+                    
+                    entries.append({
+                        'trade_num': trade_num,
+                        'direction': 'long',
+                        'entry_ts': ts,
+                        'entry_time': entry_time_str,
+                        'entry_price_guess': buy_point.iloc[i], # Stop price
+                        'exit_ts': 0,
+                        'exit_time': '',
+                        'exit_price_guess': 0.0,
+                        'raw_price_a': buy_point.iloc[i],
+                        'raw_price_b': buy_point.iloc[i]
+                    })
+                    trade_num += 1
+                    in_trade = True
+                    
+                elif bearish_cond.iloc[i]:
+                    ts = data['time'].iloc[i]
+                    entry_time_str = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+                    
+                    entries.append({
+                        'trade_num': trade_num,
+                        'direction': 'short',
+                        'entry_ts': ts,
+                        'entry_time': entry_time_str,
+                        'entry_price_guess': sell_point.iloc[i],
+                        'exit_ts': 0,
+                        'exit_time': '',
+                        'exit_price_guess': 0.0,
+                        'raw_price_a': sell_point.iloc[i],
+                        'raw_price_b': sell_point.iloc[i]
+                    })
+                    trade_num += 1
+                    in_trade = True
+                    
+        return entries

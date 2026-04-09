@@ -1,0 +1,12 @@
+def compute_pivots(df, PP):
+    high = df['high']
+    low = df['low']
+    n = len(df)
+    pivot_high = pd.Series(index=df.index, dtype=float)
+    pivot_low = pd.Series(index=df.index, dtype=float)
+    for i in range(PP, n-PP):
+        if high[i] == high[i-PP:i+PP+1].max():
+            pivot_high[i] = high[i]
+        if low[i] == low[i-PP:i+PP+1].min():
+            pivot_low[i] = low[i]
+    return pivot_high, pivot_low

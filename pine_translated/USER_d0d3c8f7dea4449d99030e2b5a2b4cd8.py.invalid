@@ -1,0 +1,44 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+df = df.sort_values('time').reset_index(drop=True)
+
+i_ma1 = 200
+i_ma2 = 10
+i_startTime = int(datetime(1995, 1, 1, 13, 30, tzinfo=timezone.utc).timestamp())
+i_endTime = int(datetime(2099, 1, 1, 19, 30, tzinfo=timezone.utc).timestamp())
+
+ma1 = df['close'].rolling(window=i_ma1).mean()
+ma2 = df['close'].rolling(window=i_ma2).mean()
+
+date_filter = (df['time'] >= i_startTime) & (df['time'] <= i_endTime)
+
+cond = (df['close'] > ma1) & (df['close'] < ma2) & date_filter
+cond = cond.fillna(False)
+
+entries = []
+trade_num = 1
+in_position = False
+
+for i in range(len(df)):
+    if cond.iloc[i] and not in_position:
+        entry_ts = int(df['time'].iloc[i])
+        entry_price = float(df['open'].iloc[i])
+        entry_time = datetime.fromtimestamp(entry_ts, tz=timezone.utc).isoformat()
+        entries.append({
+            'trade_num': trade_num,
+            'direction': 'long',
+            'entry_ts': entry_ts,
+            'entry_time': entry_time,
+            'entry_price_guess': entry_price,
+            'exit_ts': 0,
+            'exit_time': '',
+            'exit_price_guess': 0.0,
+            'raw_price_a': entry_price,
+            'raw_price_b': entry_price
+        })
+        trade_num += 1
+        in_position = True
+
+return entries

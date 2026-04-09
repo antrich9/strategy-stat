@@ -1,0 +1,87 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    CDBA = 100
+    PDCM = 70
+    FDB = 1.3
+    ma_len = 20
+    ma_len_b = 8
+    reaction_ma_1 = 1
+    reaction_ma_2 = 1
+    ma_type = "SMA"
+    ma_type_b = "SMA"
+    config_tend_alc = "DIRECCION MEDIA RAPIDA ALCISTA"
+    config_tend_baj = "DIRECCION MEDIA RAPIDA BAJISTA"
+    modo_tipo = "CON FILTRADO DE TENDENCIA"
+    VVEV = True
+    VVER = True
+    
+    entries = []
+    trade_num = 0
+    
+    close = df['close']
+    open_price = df['open']
+    high = df['high']
+    low = df['low']
+    
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/CDBA, adjust=False).mean()
+    
+    hl_range = high - low
+    body_size = (open_price - close).abs()
+    body_pct = np.where(hl_range != 0, body_size * 100 / hl_range, 0.0)
+    
+    VVE_0 = close > open_price
+    VRE_0 = close < open_price
+    VVE_1 = VVE_0 & (body_pct >= PDCM)
+    VRE_1 = VRE_0 & (body_pct >= PDCM)
+    
+    atr_prev = atr.shift(1)
+    VVE_2 = VVE_1 & (body_size >= atr_prev * FDB)
+    VRE_2 = VRE_1 & (body_size >= atr_prev * FDB)
+    
+    ma_series = close.rolling(ma_len).mean()
+    ma_series_b = close.rolling(ma_len_b).mean()
+    
+    rising_slow = ma_series > ma_series.shift(reaction_ma_1)
+    falling_slow = ma_series < ma_series.shift(reaction_ma_1)
+    rising_fast = ma_series_b > ma_series_b.shift(reaction_ma_2)
+    falling_fast = ma_series_b < ma_series_b.shift(reaction_ma_2)
+    
+    PMAMR = (config_tend_alc == "PRECIO MAYOR A MEDIA RAPIDA") & (close > ma_series_b)
+    PMAML = (config_tend_alc == "PRECIO MAYOR A MEDIA LENTA") & (close > ma_series)
+    PMAMRYL = (config_tend_alc == "PRECIO MAYOR A MEDIA RAPIDA Y LENTA") & (close > ma_series) & (close > ma_series_b)
+    PMAMLYDA = (config_tend_alc == "PRECIO MAYOR A MEDIA LENTA Y DIRECCION ALCISTA") & (close > ma_series) & rising_slow
+    PMAMRYDA = (config_tend_alc == "PRECIO MAYOR A MEDIA RAPIDA Y DIRECCION ALCISTA") & (close > ma_series_b) & rising_fast
+    PMAMLRYDA = (config_tend_alc == "PRECIO MAYOR A MEDIA LENTA/RAPIDA Y DIRECCION ALCISTA") & (close > ma_series) & rising_slow & (close > ma_series_b) & rising_fast
+    DMLA = (config_tend_alc == "DIRECCION MEDIA LENTA ALCISTA") & rising_slow
+    DMRA = (config_tend_alc == "DIRECCION MEDIA RAPIDA ALCISTA") & rising_fast
+    DMLRA = (config_tend_alc == "DIRECCION MEDIA LENTA/RAPIDA ALCISTA") & rising_slow & rising_fast
+    NCA = config_tend_alc == "NINGUNA CONDICION"
+    
+    PMEAMR = (config_tend_baj == "PRECIO MENOR A MEDIA RAPIDA") & (close < ma_series_b)
+    PMEAML = (config_tend_baj == "PRECIO MENOR A MEDIA LENTA") & (close < ma_series)
+    PMEAMRYL = (config_tend_baj == "PRECIO MENOR A MEDIA RAPIDA Y LENTA") & (close < ma_series) & (close < ma_series_b)
+    PMEAMLYDB = (config_tend_baj == "PRECIO MENOR A MEDIA LENTA Y DIRECCION BAJISTA") & (close < ma_series) & falling_slow
+    PMEAMRYDB = (config_tend_baj == "PRECIO MENOR A MEDIA RAPIDA Y DIRECCION BAJISTA") & (close < ma_series_b) & falling_fast
+    PMEAMLRYDB = (config_tend_baj == "PRECIO MENOR A MEDIA LENTA/RAPIDA Y DIRECCION BAJISTA") & (close < ma_series) & falling_slow & (close < ma_series_b) & falling_fast
+    DMLB = (config_tend_baj == "DIRECCION MEDIA LENTA BAJISTA") & falling_slow
+    DMRB = (config_tend_baj == "DIRECCION MEDIA RAPIDA BAJISTA") & falling_fast
+    DMLRB = (config_tend_baj == "DIRECCION MEDIA LENTA/RAPIDA BAJISTA") & falling_slow & falling_fast
+    NCB = config_tend_baj ==

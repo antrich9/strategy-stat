@@ -1,0 +1,21 @@
+def resample_4h(df):
+    df = df.copy()
+    # Create 4H group identifier
+    df['ts_4h'] = (df['time'] // (4 * 3600 * 1000)) * (4 * 3600 * 1000)
+    
+    # Aggregate OHLCV for 4H
+    agg_dict = {
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last',
+        'volume': 'sum'
+    }
+    
+    df_4h = df.groupby('ts_4h').agg(agg_dict).reset_index()
+    df_4h = df_4h.rename(columns={'ts_4h': 'time'})
+    df_4h = df_4h.sort_values('time').reset_index(drop=True)
+    
+    return df_4h
+
+df_4h = resample_4h(df)

@@ -1,0 +1,5 @@
+def crossover(a: pd.Series, b: pd.Series) -> pd.Series:
+    return (a > b) & (a.shift(1) <= b.shift(1))
+
+def crossunder(a: pd.Series, b: pd.Series) -> pd.Series:
+    return (a < b) & (a.shift(1) >= b.shift(1))

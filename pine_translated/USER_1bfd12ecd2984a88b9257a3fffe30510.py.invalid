@@ -1,0 +1,3 @@
+hour_4h = (df['time'] // 14400) * 14400
+is_new_4h = hour_4h != hour_4h.shift(1)
+is_new_4h.iloc[0] = True  # First bar

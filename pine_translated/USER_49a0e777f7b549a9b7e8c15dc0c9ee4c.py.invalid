@@ -1,0 +1,86 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    
+    fast_ema = df['close'].ewm(span=50, adjust=False).mean()
+    slow_ema = df['close'].ewm'].span=200, adjust=False).mean()
+    
+    times_dt = pd.to_datetime(df['time'], unit='s', utc=True)
+    dates = times_dt.dt.date
+    
+    daily_highs = {}
+    daily_lows = {}
+    daily_closes = {}
+    for date, group in df.groupby(dates):
+        daily_highs[date] = group['high'].max()
+        daily_lows[date] = group['low'].min()
+        daily_closes[date] = group['close'].iloc[-1]
+    
+    unique_dates = sorted(daily_highs.keys())
+    date_to_prev_high = {}
+    date_to_prev_low = {}
+    
+    for i, date in enumerate(unique_dates):
+        if i > 0:
+            date_to_prev_high[date] = daily_highs[unique_dates[i-1]]
+            date_to_prev_low[date] = daily_lows[unique_dates[i-1]]
+    
+    prev_day_highs = dates.map(date_to_prev_high)
+    prev_day_lows = dates.map(date_to_prev_low)
+    
+    prev_day_highs = prev_day_highs.shift(1)
+    prev_day_lows = prev_day_lows.shift(1)
+    
+    bullish_xover = (fast_ema > slow_ema) & (fast_ema.shift(1) <= slow_ema.shift(1))
+    bearish_xover = (fast_ema < slow_ema) & (fast_ema.shift(1) >= slow_ema.shift(1))
+    
+    sweep_high = df['close'] > prev_day_highs
+    sweep_low = df['close'] < prev_day_lows
+    
+    hours = times_dt.dt.hour
+    minutes = times_dt.dt.minute
+    time_val = hours * 60 + minutes
+    
+    morning_filter = (time_val >= 420) & (time_val <= 599)
+    afternoon_filter = (time_val >= 720) & (time_val <= 899)
+    
+    bull_entry = bullish_xover & sweep_high & morning_filter
+    bear_entry = bearish_xover & sweep_low & afternoon_filter
+    
+    entries_list = []
+    trade_num = 0
+    
+    for i in df.index:
+        if (bull_entry[i] or bear_entry[i]) and not pd.isna(fast_ema[i]) and not pd.isna(slow_ema[i]):
+            trade_num += 1
+            ts = int(df['time'].iloc[i])
+            direction = 'long' if bull_entry[i] else 'short'
+            entry_price = df['close'].iloc[i]
+            
+            entries_list.append({
+                'trade_num': trade_num,
+                'direction': direction,
+                'entry_ts': ts,
+                'entry_time': datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                'entry_price_guess': entry_price,
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': entry_price,
+                'raw_price_b': entry_price
+            })
+    
+    return entries_list

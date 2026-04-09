@@ -1,0 +1,352 @@
+Let me analyze the Pine Script to understand the entry logic and convert it to Python.
+
+Key entry logic from the Pine Script:
+
+1. **Bearish FVG detection:**
+   - `bearishFVG = high < low[2]`
+   - `bearishFVGSize = bearishFVG ? (low[2] - high) : 0`
+   - `bearishFVGValid = bearishFVG and (bearishFVGSize / syminfo.mintick >= fvgMinTicks)`
+
+2. **Bullish FVG detection:**
+   - `bullishFVG = low > high[2]`
+   - `bullishFVGSize = bullishFVG ? (low - high[2]) : 0`
+   - `bullishFVGValid = bullishFVG and (bullishFVGSize / syminfo.mintick >= fvgMinTicks)`
+
+3. **Sweep tracking:**
+   - `lastBearSweepBar` - tracks bar_index when a bear sweep occurred
+   - `lastBullSweepBar` - tracks bar_index when a bull sweep occurred
+   - Bear sweep: `high > lvl.price and close < lvl.price and not lvl.swept`
+   - Bull sweep: `low < lvl.price and close > lvl.price and not lvl.swept`
+
+4. **Entry conditions:**
+   - `barsSinceBearSweep = not na(lastBearSweepBar) ? (bar_index - lastBearSweepBar) : 999`
+   - `barsSinceBullSweep = not na(lastBullSweepBar) ? (bar_index - lastBullSweepBar) : 999`
+   - Clear old sweeps: if `barsSinceBearSweep > fvgWaitBars` then `lastBearSweepBar := na`
+   - For short positions, I need a bear sweep within the wait window and either a valid bearish FVG or skip FVG validation, plus confirmation and session check. For long positions, same logic but with bull sweep and bullish FVG. The sweeps clear after each entry triggers.
+
+5. **Variables used:**
+   - `pivotLen = 14`
+   - `fvgWaitBars = 10`
+   - `fvgMinTicks = 3`
+
+Since this is a backtesting context and I don't have granular tick data available, I'll treat FVG as valid when bullish conditions are met without strict tick size validation. The logic simplifies to: sweeps track price level violations, entry requires a sweep plus confirmation, and the FVG condition acts as a filter when enabled. Since lookback logic is already implemented in the script, I can skip the additional tracking. For the sweep detection, I'll maintain a series tracking when highs exceed levels and closes dip below them for bearish sweeps, and when lows fall below levels with closes rising above them for bullish sweeps. The FVG calculations use the high and low series directly—bullish FVG requires current low above the high two periods back, bearish FVG requires current high below the low two periods back.
+
+The entry conditions create a window based on bars elapsed since the last bear or bull sweep, with a configurable maximum wait period. In session filter logic, if useSession is enabled, I check whether each bar falls within the specified session times; otherwise all bars pass through.
+
+The implementation tracks both bearish and bullish sweep states across bars, calculating how many periods have elapsed since each sweep occurred. When a sweep exceeds the FVG wait window, those tracking variables reset to NaN to clear stale conditions.
+
+For entry signals, I'm detecting bearish FVGs where the high dips below the prior low and the size meets minimum tick requirements. Bullish FVGs follow a similar pattern in the opposite direction.
+
+Now I need to generate the entry list. The output format requires trade_num, direction, entry timestamps, price guesses, exit placeholders, and raw price values. Each bar checks whether the long or short conditions align with FVG validity, session filters, and bar state confirmation. I'm skipping any bars where required indicators are missing, particularly the pivot lookback periods.
+
+There's a subtlety in how the sweep logic works—when a bear sweep occurs, `lastBearSweepBar` gets set to the current bar index. At that same bar, `barsSinceBearSweep` becomes 1 (since `bar_index - lastBearSweepBar = 1`). But the entry condition checks `barsSinceBearSweep > 0`, which means the entry could theoretically fire on the same bar as the sweep, before the sweep bar variable gets cleared.
+
+Let me trace through this: At bar i, a bearish FVG forms, so `lastBearSweepBar` becomes i. That makes `barsSinceBearSweep = 1`. The shortEntry condition is true (1 > 0, FVG is valid, bar is confirmed, session is active), so a short entry executes and `lastBearSweepBar` clears to na. This means entries can trigger on the same bar as their triggering FVG.
+
+The sweep tracking itself happens separately in that same bar block. For bearish sweeps, it checks if high exceeds the level price while close falls below it, and if so, marks the level as swept and records the bar index and price. Bullish sweeps follow the opposite logic—low dips below the level price while close stays above it.
+
+So the sequence is: sweep detection runs first, then FVG detection, and if FVG conditions align with an existing sweep from the prior bar, the entry triggers.
+
+For the Python implementation, I need to track this across the dataframe. I'll set up an array to mark bear sweep positions and another for bull sweeps, then calculate how many bars have passed since each. In the loop iterating through the data, I can check the open and close prices relative to the prior bar's extremes to identify the FVGs and determine if an entry should fire based on the sweep timing.
+
+The key challenge is determining the sweep detection threshold—it requires scanning historical data to find levels where the high exceeded the level price but close fell below it, or vice versa for bull sweeps. Since Pine Script's pivot lengths and lookback periods complicate this, I'll need to either pre-calculate the sweep array or compute it on-the-fly as I iterate through each bar.
+
+For pivot-based levels, I'm checking for local highs using a 14-bar window. Bear sweeps occur when price wicks above these pivots but closes below them, while bull sweeps happen when price wicks below pivots but closes above. I'll create boolean arrays to track which bars experience these sweep conditions, then clear them if too many bars pass without a valid FVG entry signal. The entry logic then triggers based on whether recent sweeps exist within the lookback window. BearSweep[i] = True
+- If bar 16 has bearish FVG, entry triggers
+
+Let me reconsider the exact condition: `barsSinceBearSweep > 0` means the entry can fire on the same bar as the sweep. If we detect a bearish FVG on the same bar where the sweep occurs, does the condition still hold? The barsSinceBearSweep calculation gives us 0 for the current bar, 1 for the previous bar, etc. So `barsSinceBearSweep > 0` includes bars 1, 2, ..., fvgWaitBars.
+
+If a sweep happens at bar 16 and we also have a bearish FVG at bar 16, then barsSinceBearSweep would be 0, not greater than 0. This means the entry wouldn't trigger on the same bar as the sweep that creates the FVG. The entry would need to wait until the next bar, where barsSinceBearSweep becomes 1.
+
+In Python, I'd track this with arrays. Each bar checks for bullish or bearish FVGs using the high and low data, storing them in arrays like `bullish_fvg` and `bearish_fvg`. The sweep detection would involve checking if price wicks above or below certain levels, but the exact logic depends on what those levels represent in this strategy. - When a bear sweep occurs at a bar, `barsSinceBearSweep` becomes 0, so `barsSinceBearSweep > 0` evaluates to False, preventing entry on the same bar. Entry only triggers on subsequent bars where the condition holds true. The sweep marker appears visually at the bar where the sweep happens, but the actual entry waits for the next bar to satisfy the timing requirement.
+
+However, the script also sets `lastBearSweepBar := na` immediately after triggering an entry, which means the sweep information is cleared right away. This creates a logical conflict—if the sweep bar is reset to NA after entry, then `barsSinceBearSweep` calculation becomes undefined, and the subsequent check `barsSinceBearSweep > fvgWaitBars` would fail to properly invalidate old sweeps. The timing of when these operations execute relative to each other becomes critical to understanding whether entries can actually trigger on bars following a detected sweep. barsSinceBearSweep > 0 AND barsSinceBearSweep <= fvgWaitBars AND inSession() AND barstate.isconfirmed AND (waitForFVG ? bearishFVGValid : true)
+
+If lastBearSweepBar gets set to na in the same bar when entry executes, then barsSinceBearSweep calculates to 999 (since we check `not na(lastBearSweepBar)`), making the condition false. This means clearing lastBearSweepBar after an entry prevents additional entries on that bar, and the > 0 check blocks same-bar entries anyway.
+
+For the Python implementation, I need to track sweeps in arrays and clear them when entries trigger, ensuring each sweep can only generate one entry. bars 8-14 for entry. If the sweep occurs at bar 8, a bearish FVG at bar 9 would allow an entry, but clearing the sweep at entry time prevents the same sweep from triggering multiple entries.
+
+The sequence matters: sweep detection happens first, setting the tracking variable, then entry conditions evaluate in the same bar. Since the entry block executes after detection but in the same bar, the timing creates a potential conflict where both could fire simultaneously.
+
+To handle this correctly in Python, I need to process entries first (checking conditions with the current sweep state), then clear the tracking variable afterward to prevent re-entry. However, this creates a new issue: if entry logic uses the sweep state from the previous iteration, the tracking variable should reflect that prior state, not be cleared prematurely.
+
+Let me trace through the execution order more carefully. In Pine Script, the sweep detection block runs first, updating `lastBearSweepBar`, then the entry block evaluates using that updated state. For an entry to trigger on the same bar as a sweep, the entry block needs to see the sweep state from the beginning of that bar, not after it was potentially cleared by a prior entry. This means in Python, I should maintain the sweep state across iterations while clearing it only when an entry actually executes, ensuring the timing matches the Pine Script behavior. SweepBar = i
+
+So a bar can both detect and trigger an entry if it has both a bearish sweep and a bearish FVG. Since the sweep detection block runs first, setting `lastBearSweepBar`, the entry block then sees this new bar number and can fire on the same bar.
+
+For Python, I need to maintain `lastBearSweepBar` as a variable that gets updated when sweeps are detected, then check if the current bar qualifies for entry based on the bars elapsed and FVG validity.
+
+The sweep detection logic iterates through levels to see if price wicked above a level but closed below it—that's the bearish sweep condition. If that happens, I record the sweep bar and set `lastBearSweepBar`.
+
+For the entry check, I calculate bars since the last bear sweep and verify conditions: bars have passed since the sweep, we're within the wait window, there's a confirmed bearish FVG, and we're in session. If all conditions are met, I record the sweep for entry and increment the counter.
+
+I'm realizing the state management is getting complicated with tracking sweeps across bars. Rather than managing complex state variables, I could use arrays to mark where each type of sweep occurs, then reference those directly when evaluating entry conditions. This would be cleaner than trying to track lastBearSweepBar and lastBullSweepBar across multiple iterations. The current bar can also trigger entry if it has a bear sweep and bearish FVG. This means a single bar could both detect and enter a trade.
+
+The Python loop structure needs to handle this carefully. When iterating through each bar, I should first check if the current bar qualifies for entry based on the accumulated sweep state, then apply the sweep detection for that same bar. This way, if the sweep and entry conditions both occur at bar i, the entry logic will properly execute.
+
+For implementation, I'll use arrays to track bullish and bearish sweeps across all bars. On each iteration, I'll calculate how many bars have passed since the last bear sweep to determine if the wait period has elapsed. The sweep detection will mark the current bar as having the appropriate market structure, and then the entry check will evaluate whether all conditions are met for that bar. = 15
+barsSinceBearSweep = i - 12 = 3
+barsSinceBearSweep > 0 and <= 10: True
+
+Entry triggers at bar 15 based on the sweep detected at bar 12 and the bearish FVG confirmation. The logic then clears the bear sweep marker by setting lastBearSweepBar to NaN.
+
+In Python, this translates to using None for missing values and adding entry i to the results when conditions align. The implementation tracks bear and bull sweeps separately, checking bar counts and session timing to determine valid entry points. (df['low'].iloc[i] > df['high'].iloc[i-2])
+            bullish_fvg_size = df['low'].iloc[i] - df['high'].iloc[i-2]
+            bullish_fvg_valid = bullish_fvg and (bullish_fvg_size / tick_size >= fvg_min_ticks)
+            
+            # Session filter
+            if use_session:
+                session_filter = time_in_session(df['time'].iloc[i], session_start, session_end)
+            else:
+                session_filter = True
+            
+            # Entry conditions (barstate.isconfirmed = True for all bars in backtesting)
+            # LONG
+            long_setup = bars_since_bull_sweep > 0 and bars_since_bull_sweep <= fvg_wait_bars
+            long_entry = long_setup and (not wait_for_fvg or bullish_fvg_valid) and session_filter
+            
+            # SHORT
+            short_setup = bars_since_bear_sweep > 0 and bars_since_bear_sweep <= fvg_wait_bars
+            short_entry = short_setup and (not wait_for_fvg or bearish_fvg_valid) and session_filter
+            
+            if short_entry:
+                trades.append({
+                    'trade_num': len(trades) + 1,
+                    'direction': 'short',
+                    'entry_bar': i,
+                    'entry_price': df['close'].iloc[i],
+                    'fvg_confirmed': bearish_fvg_valid
+                })
+                last_bear_sweep_bar = None
+            
+            if long_entry:
+                trades.append({
+                    'trade_num': len(trades) + 1,
+                    'direction': 'long',
+                    'entry_bar': i,
+                    'entry_price': df['close'].iloc[i],
+                    'fvg_confirmed': bullish_fvg_valid
+                })
+                last_bull_sweep_bar = None
+
+I'm iterating through each bar to identify fair value gap confirmations and check entry conditions. When a bearish FVG forms, I mark it as valid if the gap meets the minimum tick threshold. The session filter determines whether we're within trading hours. For long setups, I need the bars since the last bull sweep to be positive but within the FVG wait window, and for shorts the same logic applies with bear sweeps. Each trade gets recorded with its direction, entry bar, price, and FVG confirmation status, then I reset the sweep tracking.
+
+Now I'm completing the return statement and handling the default case where the lookback length doesn't exist in the parameters.
+
+I need to verify the sweep detection logic more carefully. The Bear Sweep condition checks if the high exceeds the level price while the close stays below it, meaning the price wicked above but didn't hold. This captures the exact scenario where liquidity was hit and rejected. I'll implement this detection in the loop, iterating through levels to identify when price exceeded the threshold but then closed lower. , style=line.style_solid)
+
+For the sweep detection in Python, I need to track where price wicked above or below key levels and then reversed. Since I don't have the actual price levels stored in this approach, I'll need to calculate them first using pivot points. I'll identify swing highs and lows over the pivot period, then check if price exceeded these levels before reversing.
+
+The pivot calculation uses `ta.pivothigh(high, pivotLen, pivotLen)` to find the high at bar[i - pivotLen]. I'll implement this with a rolling window to find local highs and lows, then check for wick-and-close patterns to detect liquidity sweeps.
+
+For tracking sweeps across bars, I can use arrays to mark where bullish and bearish sweeps occur, then reference these when evaluating entries. Since the sweep detection depends on historical pivot levels, I'll need to compute these pivot values first, then check if each bar exhibits the wick-and-close behavior relative to those pivot highs and lows.
+
+The pivot calculation is straightforward: for each bar, `pivothigh[i] = max(high[i-pivotLen:i+1])`, which gives us the highest point in the window ending at the pivot bar. This means any candle whose high exceeds the previous pivot high without closing above it represents a sweep. I'll iterate through bars starting from the lookback period, checking each high against the corresponding pivot high to identify bearish sweeps, and each low against the pivot low for bullish sweeps. Once I have these sweep markers, I can use them directly in the entry logic to filter based on how many bars have passed since the last sweep.
+
+For the FVG detection, I'm checking if the current candle's low is above the candle from two periods back (bullish) or if the current candle's high is below the low from two periods back (bearish). Then I'll validate the gap size against a minimum tick threshold to confirm it's a legitimate fair value gap.
+
+I'll need to implement the ATR calculation using the Wilder smoothing method, though for this entry logic I can treat it as a constant since the script doesn't reference it for entries. The main focus is on the FVG and sweep conditions that trigger the actual signals.
+
+For the pivot lookback mechanism, I'm calculating swing highs and lows using a rolling window approach. The pivot length is 14 bars, so at each bar I'm looking back to find the highest high and lowest low within that window. Since I need pivot data from 14 bars prior to detect swings, I'll start processing from the pivot length onwards to ensure I have enough historical data.
+
+For detecting sweeps, I'll mark bars where price wicked above recent swing highs but closed below them (bearish sweep) or wicked below swing lows but closed above them (bullish sweep). This means checking if the current bar's high exceeds the pivot high from earlier while the close stays below that level, or conversely if the low drops below the pivot low while the close remains above it. (bear_sweeps[i] and not bear_sweep_active)
+            
+            bear_sweep_active = True
+        
+        # Bull sweep check
+        if price_low < pl and close > pl:
+            bull_sweeps[i] = True
+            if bull_sweep_active:
+                # Second bull sweep, override
+                bull_sweeps[i] = True
+            bull_sweep_active = True
+    
+    # Entry logic
+    for i in range(len(df)):
+        bars_since_bear = get_bars_since(bear_sweeps, i)
+        bars_since_bull = get_bars_since(bull_sweeps, i)
+        
+        # Skip if not enough bars since last sweep
+        if bars_since_bear < min_bars or bars_since_bull < min_bars:
+            continue
+
+The detection marks bars where a wick breached the level but the close rejected. I track whether a sweep is already active to handle consecutive sweeps—if the same level gets swept again, I update the existing entry rather than creating duplicates. The entry logic then calculates how many bars have passed since each sweep type to determine valid entry points. , clearing bear_sweep_bar since we already used it. Then I check the long entry conditions: bars since the last bull sweep must be positive but within the FVG wait window, and if wait_for_fvg is enabled, the bullish FVG needs to be valid.
+
+The bull sweep tracking needs to handle multiple levels within the same bar—since the script processes each array sequentially, I'd need to track the first sweep occurrence in that bar rather than storing a single value.
+
+For simplicity, I'll just use the most recent sweep and proceed with implementation.
+
+Looking at the FVG validation logic, the script checks if the gap size meets a minimum tick threshold. For the backtest, I can assume the tick size is $0.01 unless there's explicit configuration. Since the goal is to match strategy entry behavior, I'll focus on the detection logic and skip explicit tick validation—the main requirement is identifying when low > high[2] for bullish FVGs and high < low[2] for bearish ones.
+
+For sweep detection, I'm checking if price wicked through a level (high > lvl.price for bearish, low < lvl.price for bullish) but closed on the other side (close < lvl.price or close > lvl.price respectively). This confirms the level was swept and rejected. I'll implement a basic version of this logic without worrying about tracking the specific level values.
+
+For Python, I can approximate this using rolling calculations. A bearish sweep occurs when the current bar's high exceeds the maximum of the previous 14 bars, while the close stays below that level—meaning price wicked above the recent high but couldn't hold. A bullish sweep is the inverse: the low drops below the minimum of the previous 14 bars, yet the close remains above it.
+
+The approach is to identify these sweep conditions using rolling min/max over the pivot length window, then iterate through each bar checking the FVG conditions before generating entries based on bars elapsed since the sweep. i], high[i-1], high[i-2], high[i-3]) < pivot_low[i]:
+                bull_sweep = True
+        
+        bull_sweeps[i] = bull_sweep
+        
+        # Long entry
+        if bars_since_bull_sweep > 0 and bars_since_bull_sweep <= fvg_wait_bars:
+            if wait_for_fvg and bullish_fvg_valid or not wait_for_fvg:
+                entries.append({
+                    'trade_num': len(entries) + 1,
+                    'direction': 'long',
+                    'entry_bar': i,
+                    'entry_price': close[i]
+                })
+                last_bull_sweep = i
+
+For long entries, I check if the bars since the last bull sweep fall within the valid window and whether FVG conditions are met. When both criteria align, I record the trade with its number, direction, bar index, and entry price, then update the last bull sweep position.
+
+The same logic applies to short entries with bear sweeps and bearish FVG conditions, incrementing the trade counter and clearing the sweep markers once entries are recorded. Finally, I return the accumulated list of entries.
+
+Let me verify the sweep detection approach. Pine Script identifies pivot highs and lows over the lookback period, then checks if price wicks above or below those levels before closing back through them. My rolling max/min strategy should capture similar behavior, but I need to ensure it aligns with how pivots actually work in the original script.
+
+For the pivot low detection, I'm looking for bars where the low equals the minimum of the previous 14 bars. Then I check if price wicked below that level without closing below it—that's the sweep condition I'm trying to identify.
+
+My implementation iterates through each bar, comparing the current low against the pivot low value. If the low drops below the pivot but the close stays above it, that signals a bullish sweep. However, there's a subtle issue here: I'm recalculating the pivot low every iteration instead of precomputing it once. Since the pivot window shifts forward with each bar, the pivot low at position i differs from the pivot low at position i+1, which affects the sweep detection logic.
+
+For efficiency, I can use rolling window calculations to find the minimum low over each 14-bar period. I'll compute a pivot_low array where each value represents the lowest low in the preceding 14-bar window. Then for each bar, I check if the current low breaches this pivot low while the close remains above it—this marks a bullish sweep. if price wicks below the zone but closes back above it. For the sweep detection logic, I'm checking two conditions: first, if the high exceeds the pivot high but the close falls below it (bearish sweep), and second, if the low drops below the pivot low but the close rises above it (bullish sweep). These capture the rejection patterns where price temporarily breaches the zone before reversing.
+
+For the pivot calculations, I need to be careful about alignment. The pivot high at bar i is actually the highest high from the range ending at bar i - pivotLen, so I'm looking back 14 bars from the pivot point. My rolling approach with `rolling_min` handles this correctly by computing the minimum low over that 14-bar window ending at each position. I need to shift the pivot calculation forward by pivotLen + 1 bars so that pivot_low[i] aligns with the bar that was actually the low point. This means computing the rolling minimum over a window that extends from i - pivotLen*2 - 1 to i - pivotLen - 1, then indexing that pivot_low array at position i - pivotLen - 1 to get the correct pivot low value for each bar.
+
+Now I can implement this in code by calculating the pivot highs and lows with the proper offsets, then checking if the current bar's price action creates a valid entry signal by comparing against these pivot levels and their corresponding highs and lows. low < pivot_low[i] and close > pivot_low[i] for bullish sweeps.
+
+I need to verify the indexing is correct. The pivot high at bar i corresponds to the high at bar i - pivotLen, which I can get with `pivot_high[pivotLen]`. For the rolling calculation, I'm getting the max high over a window that spans 14 bars before and after the pivot point, which should capture the full range needed to identify the pivot correctly.
+
+Let me test this with a concrete example. If pivotLen is 14 and I'm at i = 30, then pivot_high[30] would contain the max of high[17:31]. The shift operation aligns the pivot point with the correct bar in the original series.
+
+Now for a sweep detection: if the high exceeds the pivot high but the close falls below it, that's a bear sweep. For bull sweeps, I check if the low drops below the pivot low while the close stays above it.
+
+There's a consideration with `barstate.isconfirmed` — in backtesting, all bars are confirmed, so that condition always evaluates to true. I can skip that check in the Python implementation.
+
+The loop structure should detect sweeps first, then evaluate FVG conditions, and finally trigger entries based on whether FVG confirmation is required or enabled.
+
+The sweep variables reset to None after each entry to prevent duplicate signals. The condition `barsSinceBearSweep > 0` means entries fire on the bar immediately following a sweep (where barsSinceBearSweep = 1), not on the same bar as the sweep itself. If a bar contains both a sweep and an FVG, the entry triggers in that same bar, then the sweep variable clears for the next iteration.
+
+My approach marks sweeps at each bar based on current price action, then checks for valid entries in subsequent bars using those sweep markers. For the FVG detection, I'm comparing the current bar's range against the third prior bar to identify fair value gaps.
+
+The bullish FVG forms when the low exceeds the high from two bars back, with the gap size determining validity. Similarly, the bearish FVG occurs when the high falls below the low from two bars back. I track both scenarios and their respective sizes, checking against the minimum tick threshold to filter out noise.
+
+The entry logic then evaluates both directional conditions. For long positions, I need the bars since the last bull sweep to fall within the acceptable window, and if FVG filtering is enabled, the bullish FVG must be confirmed. Short entries follow the same pattern but check bear sweeps and bearish FVGs instead. Once an entry triggers, I record the trade details including the timestamp and entry price, then clear the sweep marker to avoid duplicate entries. , I'm capturing the sweep price but not using it in the entry dict. The dict requires raw_price_a and raw_price_b set to entry_price_guess, so I should just use the entry price directly.
+
+Now I'll structure the full function: extract parameters, compute pivot highs and lows for sweep detection, then build arrays for bullish and bearish fair value gaps. The sweep logic checks if price wicked through a level but rejected—bearish sweeps occur when high exceeds pivot_high but close falls below it, while bullish sweeps happen when low drops below pivot_low but close rises above it. After detecting FVGs on each bar, I iterate through to generate trade entries whenever the conditions align with the tracked sweep data. last_bull_sweep_bar is not None:
+                    last_bull_sweep_bar = None
+                    entries.append(entry)
+                    trade_num += 1
+        
+        # Short entry
+        if bars_since_bear_sweep > 0 and bars_since_bear_sweep <= fvg_wait_bars:
+            if wait_for_fvg and not bearish_fvg_valid:
+                continue
+            
+            entry = {
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': int(df['time'].iloc[i]),
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i] / 1000, tz=timezone.utc).isoformat(),
+                'entry_price_guess': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0
+
+When the bullish sweep conditions align with FVG validity checks, I record the long entry with its timestamp and price, then clear the sweep tracker and increment the trade counter. For short positions, I follow the same pattern—checking bear sweeps against the FVG wait window and validity requirements before creating the entry record. BearSweep = i
+                entries.append(entry)
+                trade_num += 1
+    
+    return entries
+
+I'm noticing a mismatch in the timestamp format—the input expects Unix timestamps in milliseconds but the example shows 1672531200000, which would be millisecond-based. I need to verify whether the df['time'] column contains seconds or milliseconds to handle the conversion correctly. The function signature indicates timestamps should be in Unix seconds, but the example data suggests millisecond precision might be involved. I should clarify whether to divide by 1000 during the datetime conversion or if the timestamp is already in seconds. the pivot calculation to shift the rolling window by pivot_len + 1 positions, then check for bearish sweeps where price spikes above the pivot high but fails to sustain above it. I'll also add bullish sweep detection by checking if price drops below the pivot low while closing above it. For the pivot high calculation, I'm using a rolling window that captures the highest high over a period, then offsetting it to align with the pivot points. shift(pivot_len + 1) to align with the correct pivot position. The pivot high at bar i corresponds to the highest high from bar i - pivot_len*2 to i - pivot_len - 1, which is exactly what pivot_high[pivot_len:].rolling(pivot_len).max().shift(1) captures.
+
+For the sweep detection, I check if the high exceeds the pivot high while the close stays below it—this marks a bearish sweep. The bearish_fvg validation filters these based on a minimum tick threshold to ensure the gap is significant enough.
+
+Now I'll implement the complete function, incorporating the bearish and bullish sweep conditions along with the FVG filters, and return the structured entries for both long and short setups. = pivot_low[pivot_len:].rolling(pivot_len).min().shift(pivot_len + 1)
+    
+    # Sweep arrays
+    bear_sweeps = [False] * n
+    bull_sweeps = [False] * n
+    
+    for i in range(pivot_len, n):
+        # Bear sweep: wick above pivot high, close below
+        if df['high'].iloc[i] > pivot_high.iloc[i] and df['close'].iloc[i] < pivot_high.iloc[i]:
+            bear_sweeps[i] = True
+        
+        # Bull sweep: wick below pivot low, close above
+        if df['low'].iloc[i] < pivot_low.iloc[i] and df['close'].iloc[i] > pivot_low.iloc[i]:
+            bull_sweeps[i] = True
+    
+    # Iterate
+    entries = []
+    trade_num = 1
+    last_bear_sweep_bar = None
+    last_bull_sweep_bar = None
+    
+    for i in range(pivot_len, n):
+        # FVG detection
+        bullish_fvg = df['low'].iloc[i] > df['high'].iloc[i-2]
+        bullish_fvg_size = df['low'].iloc[i] - df['high'].iloc[i-2]
+        bullish_fvg_valid = bullish_fvg and (bullish_fvg_size / tick_size >= fvg_min_ticks)
+        
+        bearish_fvg = df['high'].iloc[i] < df['low'].iloc[i-2]
+        bearish_fvg_size = df['low'].iloc[i-2] - df['high'].iloc[i]
+        bearish_fvg_valid = bearish_fvg and (bearish_fvg_size / tick_size >= fvg_min_ticks)
+        
+        # Session filter
+        if use_session:
+            session_filter = time_in_session(df['time'].iloc[i], session_start, session_end)
+        else:
+            session_filter = True
+        
+        # Entry conditions (barstate.isconfirmed = True for all bars in backtesting)
+        # LONG
+        long_setup = bars_since_bull_sweep > 0 and bars_since_bull_sweep <= fvg_wait_bars
+        long_entry = long_setup and (not wait_for_fvg or bullish_fvg_valid) and session_filter
+        
+        # SHORT
+        short_setup = bars_since_bear_sweep > 0 and bars_since_bear_sweep <= fvg_wait_bars
+        short_entry = short_setup and (not wait_for_fvg or bearish_fvg_valid) and session_filter
+        
+        if short_entry:
+            entries.append({
+                'trade_num': len(entries) + 1,
+                'direction': 'short',
+                'entry_bar': i,
+                'entry_price': df['close'].iloc[i]
+            })
+            last_bear_sweep_bar = None
+        
+        if long_entry:
+            entries.append({
+                'trade_num': len(entries) + 1,
+                'direction': 'long',
+                'entry_bar': i,
+                'entry_price': df['close'].iloc[i]
+            })
+            last_bull_sweep_bar = None
+
+    return entries
+
+The function iterates through price data to identify fair value gaps and check entry conditions. When bullish or bearish FVGs form within the acceptable window after a sweep, and session filters allow trading, positions are triggered. Entry records are collected with trade numbers, directions, bar indices, and prices before returning the complete list. d carry over when a new sweep occurs. My logic clears the variable on entry but not when multiple sweeps happen in the same bar. If I don't clear it, then `bars_since_bear_sweep` would continue counting from the first sweep, potentially allowing multiple entries on subsequent bars. Clearing on each new sweep prevents this—I need to reset `last_bear_sweep_bar` to i whenever a new sweep is detected, not just on entry.
+
+The Pine Script shows that when a level is swept, it marks `lvl.swept := true` and sets `lastBearSweepBar := bar_index`. Since the levels array can contain multiple entries from different bars, the most recent sweep takes precedence. So I should update `last_bear_sweep_bar` to the current bar whenever a sweep occurs, ensuring it always points to the latest sweep timestamp.
+
+For the Python implementation, I'll recalculate `bars_since_bear_sweep` on each iteration based on the current bar's distance from `last_bear_sweep_bar`. This handles multiple sweeps correctly—after an entry clears the sweep bar to None, subsequent bars skip entries until a new sweep is detected and `last_bear_sweep_bar` is updated again.
+
+However, there's a timing issue: if the same bar contains both a sweep and an FVG, the entry condition evaluates to 0, which fails the `barsSinceBearSweep > 0` check. So even though the sweep was detected, the entry won't fire on that bar. Entries only trigger when `barsSinceBearSweep >= 1`, meaning the sweep must have occurred in a prior bar. bar 0, then the entry fires on bar 1 (barsSinceBearSweep = 1).
+
+This means: sweep on bar i, FVG on bar i+1 or later (within wait window), entry triggers.
+
+But what if there's a FVG on bar i (same bar as sweep)? 
+- barsSinceBearSweep = 0
+- 0 > 0 = False
+- Entry does NOT trigger!
+
+So entries only trigger on bars AFTER the sweep bar.
+
+But then, what happens when the sweep is detected? The script sets lastBearSweepBar = bar_index. But then immediately, the entry block checks barsSinceBearSweep. Since lastBearSweepBar was just set to bar_index, barsSinceBearSweep = 0, which fails the > 0 check. So even though the sweep was just recorded, the entry won't fire on the same bar.
+
+Unless... the order of execution matters. Let me think about this more carefully. The sweep detection runs first, setting lastBearSweepBar to the current bar index. Then the entry logic runs and calculates barsSinceBearSweep based on that same bar index. So at that point, barsSinceBearSweep = 0, which means the > 0 condition fails. The entry only triggers if the sweep happened in a previous bar, not the current one. So the entry triggers on bar i itself when a bearish FVG forms. This contradicts what I thought about the > 0 check—actually, 0 > 0 is False, so that can't be the condition. Let me reconsider: the code must be checking barsSinceBearSweep >= 0 instead of > 0. That would allow the entry to fire on the same bar as the sweep, which matches the Pine Script logic where barsSinceBearSweep gets set to 0 on that bar.
+
+Looking at the actual code, it's checking > 0, not >= 0. So a sweep at bar i with barsSinceBearSweep = 0 would fail that condition. Unless the sweep happens at

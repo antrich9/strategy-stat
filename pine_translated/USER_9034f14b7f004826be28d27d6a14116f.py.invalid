@@ -1,0 +1,7 @@
+ohlc_4h = df[['open','high','low','close','volume']].resample('4h').agg({
+    'open': 'first',
+    'high': 'max',
+    'low': 'min',
+    'close': 'last',
+    'volume': 'sum'
+})

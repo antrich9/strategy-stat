@@ -1,0 +1,71 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    # Ensure data is sorted by time
+    df = df.sort_values('time').reset_index(drop=True)
+
+    # Convert unix timestamp to datetime
+    df['time_dt'] = pd.to_datetime(df['time'], unit='s', utc=True)
+
+    # Date for daily aggregation
+    df['date'] = df['time_dt'].dt.date
+
+    # ------------------------------------------------------------------
+    # Previous day high & low (daily high/low shifted by one day)
+    # ------------------------------------------------------------------
+    daily = df.groupby('date').agg(day_high=('high', 'max'),
+                                   day_low=('low', 'min')).reset_index()
+    daily['prev_day_high'] = daily['day_high'].shift(1)
+    daily['prev_day_low'] = daily['day_low'].shift(1)
+
+    df = df.merge(daily[['date', 'prev_day_high', 'prev_day_low']], on='date', how='left')
+
+    # ------------------------------------------------------------------
+    # Flags for previous day high/low sweeps
+    # ------------------------------------------------------------------
+    sweep_high = (df['close'] > df['prev_day_high']) & df['prev_day_high'].notna()
+    sweep_low  = (df['close'] < df['prev_day_low']) & df['prev_day_low'].notna()
+
+    # Cumulative within each day (once a sweep occurs the flag stays true until next day)
+    df['flagpdh'] = sweep_high.groupby(df['date']).cummax()
+    df['flagpdl'] = sweep_low.groupby(df['date']).cummax()
+
+    # ------------------------------------------------------------------
+    # Order Block (OB) detection
+    # ------------------------------------------------------------------
+    # Shifts for the required bars
+    close_s1 = df['close'].shift(1)
+    open_s1  = df['open'].shift(1)
+    high_s1  = df['high'].shift(1)
+    low_s1   = df['low'].shift(1)
+
+    close_s2 = df['close'].shift(2)
+    open_s2  = df['open'].shift(2)
+    high_s2  = df['high'].shift(2)
+    low_s2   = df['low'].shift(2)
+
+    # Bullish OB: down bar 2 bars back, up bar 1 bar back, close of up bar > high of down bar
+    ob_up = (close_s2 < open_s2) & (close_s1 > open_s1) & (close_s1 > high_s2)
+
+    # Bearish OB: up bar 2 bars back, down bar 1 bar back, close of down bar < low of up bar
+    ob_down = (close_s2 > open_s2) & (close_s1 < open_s1) & (close_s1 < low_s2)
+
+    # ------------------------------------------------------------------
+    # Fair Value Gap (FVG) detection
+    # ------------------------------------------------------------------
+    fvg_up   = df['low'] > df['high'].shift(-2)   # low today > high 2 bars ahead
+    fvg_down = df['high'] < df['low'].shift(-2)   # high today < low 2 bars ahead
+
+    # ------------------------------------------------------------------
+    # Stacked OB + FVG conditions
+    # ------------------------------------------------------------------
+    bull_stack = ob_up & fvg_up
+    bear_stack = ob_down & fvg_down
+
+    # ------------------------------------------------------------------
+    # Time filters (UTC hour only – ignore GMT offset for simplicity)
+    # ------------------------------------------------------------------
+    hour = df['time_dt'].dt.hour
+    long_time  = (hour >= 7) &

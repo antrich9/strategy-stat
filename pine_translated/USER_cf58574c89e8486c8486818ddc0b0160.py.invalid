@@ -1,0 +1,41 @@
+entries = []
+trade_num = 1
+
+for i in range(len(df)):
+    if df['time'].iloc[i] is None or pd.isna(df['time'].iloc[i]):
+        continue
+    
+    if GCSignalsLongFinal.iloc[i] and df['position_size'].iloc[i] == 0:
+        ts = int(df['time'].iloc[i])
+        entry = {
+            'trade_num': trade_num,
+            'direction': 'long',
+            'entry_ts': ts,
+            'entry_time': datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+            'entry_price_guess': df['close'].iloc[i],
+            'exit_ts': 0,
+            'exit_time': '',
+            'exit_price_guess': 0.0,
+            'raw_price_a': df['close'].iloc[i],
+            'raw_price_b': df['close'].iloc[i]
+        }
+        entries.append(entry)
+        trade_num += 1
+    elif GCSignalsShortFinal.iloc[i] and df['position_size'].iloc[i] == 0:
+        ts = int(df['time'].iloc[i])
+        entry = {
+            'trade_num': trade_num,
+            'direction': 'short',
+            'entry_ts': ts,
+            'entry_time': datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+            'entry_price_guess': df['close'].iloc[i],
+            'exit_ts': 0,
+            'exit_time': '',
+            'exit_price_guess': 0.0,
+            'raw_price_a': df['close'].iloc[i],
+            'raw_price_b': df['close'].iloc[i]
+        }
+        entries.append(entry)
+        trade_num += 1
+
+return entries

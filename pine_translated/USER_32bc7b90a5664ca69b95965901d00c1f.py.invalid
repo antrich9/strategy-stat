@@ -1,0 +1,8 @@
+lookback = 20
+low = df['low']
+high = df['high']
+close = df['close']
+
+# Compute pivot low and high
+pivot_low = (low == low.rolling(window=2*lookback+1, center=True).min()).shift(lookback)
+pivot_high = (high == high.rolling(window=2*lookback+1, center=True).max()).shift(lookback)

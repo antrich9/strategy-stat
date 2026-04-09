@@ -1,0 +1,3 @@
+bb = 20  # lookback period (input_lookback)
+pl = low.where(low == low.rolling(2*bb+1).min()).fillna(method='ffill')
+ph = high.where(high == high.rolling(2*bb+1).max()).fillna(method='ffill')

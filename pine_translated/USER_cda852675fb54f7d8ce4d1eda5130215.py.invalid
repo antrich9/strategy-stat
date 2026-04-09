@@ -1,0 +1,77 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    # Convert time to datetime if needed
+    df = df.copy()
+    if df['time'].dtype == 'int64' or df['time'].dtype == 'int32':
+        df['datetime'] = pd.to_datetime(df['time'], unit='s', utc=True)
+    else:
+        df['datetime'] = pd.to_datetime(df['time'], utc=True)
+    
+    # Resample to 4H
+    df_4h = df.set_index('datetime').resample('4h').agg({
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last',
+        'volume': 'sum'
+    }).dropna()
+    
+    # Resample to daily
+    df_daily = df.set_index('datetime').resample('1d').agg({
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last',
+        'volume': 'sum'
+    }).dropna()
+    
+    # Now calculate indicators on 4H and daily
+    # For FVG: low_4h > high_4h_2 (bullish)
+    # We need to shift the data appropriately
+    
+    # Get 4H data
+    high_4h = df_4h['high']
+    low_4h = df_4h['low']
+    close_4h = df_4h['close']
+    
+    # For FVG detection, we need:
+    # low_4h (current 4H low) > high_4h_2 (2 periods ago 4H high)
+    
+    # Calculate swing detection on daily
+    dailyHigh = df_daily['high']
+    dailyLow = df_daily['low']
+    
+    # Swing detection logic
+    # is_swing_high = dailyHigh.shift(1) < dailyHigh and dailyHigh.shift(3) < dailyHigh.shift(2) and dailyHigh.shift(4) < dailyHigh.shift(2)
+    # is_swing_low = dailyLow.shift(1) > dailyLow and dailyLow.shift(3) > dailyLow.shift(2) and dailyLow.shift(4) > dailyLow.shift(2)
+    
+    # Actually looking at the pine script:
+    # is_swing_high11 = dailyHigh21 < dailyHigh22 and dailyHigh11[3] < dailyHigh22 and dailyHigh11[4] < dailyHigh22
+    # where dailyHigh21 = dailyHigh[1], dailyHigh22 = dailyHigh[2], dailyHigh11 = dailyHigh (current)
+    
+    # So: current daily high < 2 days ago daily high AND
+    #     3 days ago daily high < 2 days ago daily high AND
+    #     4 days ago daily high < 2 days ago daily high
+    
+    # Similarly for swing low
+    
+    # This is complex. Let me simplify and assume we're working with the conditions directly
+    
+    # Actually, looking at the Pine Script more carefully:
+    # It uses request.security to get 4H and daily data
+    # In Python, we need to resample
+    
+    # Let me reconsider. The df is the main dataframe. We need to:
+    1. Resample to 4H and daily
+    2. Calculate the conditions
+    3. Then map back to original dataframe or work with resampled data
+    
+    Since the function should work with the provided df and return entries, I need to:
+    - Resample to get 4H and daily indicators
+    - Calculate the conditions
+    - When conditions are met, create an entry
+    
+    Let me write the full implementation:

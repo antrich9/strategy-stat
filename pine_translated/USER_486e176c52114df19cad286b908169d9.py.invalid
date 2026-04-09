@@ -1,0 +1,130 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    
+    if df.empty or len(df) < 3:
+        return []
+    
+    times = df['time'].values
+    opens = df['open'].values
+    highs = df['high'].values
+    lows = df['low'].values
+    closes = df['close'].values
+    
+    n = len(df)
+    results = []
+    trade_num = 1
+    
+    # Convert to pandas for grouping
+    df_copy = df.copy()
+    df_copy['date'] = pd.to_datetime(times, unit='s', utc=True).dt.date
+    
+    # Calculate previous day's high and low
+    daily_agg = df_copy.groupby('date').agg({'high': 'max', 'low': 'min'}).reset_index()
+    daily_agg['prev_day_high'] = daily_agg['high'].shift(1)
+    daily_agg['prev_day_low'] = daily_agg['low'].shift(1)
+    day_map = dict(zip(daily_agg['date'], zip(daily_agg['prev_day_high'], daily_agg['prev_day_low'])))
+    
+    prev_day_high = np.array([day_map.get(d, (np.nan, np.nan))[0] for d in df_copy['date']])
+    prev_day_low = np.array([day_map.get(d, (np.nan, np.nan))[1] for d in df_copy['date']])
+    
+    # Flags for swept previous day high/low
+    flagpdh = np.full(n, False)
+    flagpdl = np.full(n, False)
+    
+    for i in range(1, n):
+        if not np.isnan(closes[i]) and not np.isnan(prev_day_high[i]):
+            if closes[i] > prev_day_high[i]:
+                flagpdh[i] = True
+        if not np.isnan(closes[i]) and not np.isnan(prev_day_low[i]):
+            if closes[i] < prev_day_low[i]:
+                flagpdl[i] = True
+    
+    # Identify bars as up or down
+    is_up = closes > opens
+    is_down = closes < opens
+    
+    # Bullish Order Block (OB): previous bar down, current bar up, close above prev bar's high
+    # isObUp(1): isDown(2) and isUp(1) and close[1] > high[2]
+    ob_up = np.full(n, False)
+    for i in range(2, n):
+        if not np.isnan(is_down[i+1]) and not np.isnan(is_up[i]) and not np.isnan(closes[i]) and not np.isnan(highs[i+1]):
+            ob_up[i] = is_down[i+1] and is_up[i] and (closes[i] > highs[i+1])
+    
+    # Bearish Order Block: previous bar up, current bar down, close below prev bar's low
+    ob_down = np.full(n, False)
+    for i in range(2, n):
+        if not np.isnan(is_up[i+1]) and not np.isnan(is_down[i]) and not np.isnan(closes[i]) and not np.isnan(lows[i+1]):
+            ob_down[i] = is_up[i+1] and is_down[i] and (closes[i] < lows[i+1])
+    
+    # Bullish FVG: current low > high from 2 bars ago
+    # isFvgUp(0): low[0] > high[2]
+    fvg_up = np.full(n, False)
+    for i in range(n - 2):
+        if not np.isnan(lows[i]) and not np.isnan(highs[i+2]):
+            fvg_up[i] = lows[i] > highs[i+2]
+    
+    # Bearish FVG: current high < low from 2 bars ago
+    fvg_down = np.full(n, False)
+    for i in range(n - 2):
+        if not np.isnan(highs[i]) and not np.isnan(lows[i+2]):
+            fvg_down[i] = highs[i] < lows[i+2]
+    
+    def is_time(position, ts, gmt_offset):
+        start_str = position[:4]
+        end_str = position[-4:]
+        start_h = int(start_str[:2]) * 100 + int(start_str[2:])
+        end_h = int(end_str[:2]) * 100 + int(end_str[2:])
+        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+        hour = dt.hour
+        minute = dt.minute
+        time_val = hour * 100 + minute + gmt_offset * 100
+        time_val = time_val % 2400
+        return start_h <= time_val <= end_h
+    
+    betweenTime = '0700-0959'
+    betweenTime1 = '1200-1459'
+    gmtOffset = 1
+    
+    # Process long entries
+    for i in range(2, n):
+        if ob_up[i-1] and fvg_up[i-1] and flagpdh[i] and is_time(betweenTime, times[i], gmtOffset):
+            results.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': int(times[i]),
+                'entry_time': datetime.fromtimestamp(times[i], tz=timezone.utc).isoformat(),
+                'entry_price_guess': float(closes[i]),
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': float(closes[i]),
+                'raw_price_b': float(closes[i])
+            })
+            trade_num += 1
+    
+    # Process short entries
+    for i in range(2, n):
+        if ob_down[i-1] and fvg_down[i-1] and flagpdl[i] and is_time(betweenTime1, times[i], gmtOffset):
+            results.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': int(times[i]),
+                'entry_time': datetime.fromtimestamp(times[i], tz=timezone.utc).isoformat(),
+                'entry_price_guess': float(closes[i]),
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess

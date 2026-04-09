@@ -1,0 +1,2 @@
+df['hour'] = pd.to_datetime(df['time'], unit='s').dt.hour
+isValidTradeTime = ((df['hour'] >= 2) & (df['hour'] < 5)) | ((df['hour'] >= 10) & (df['hour'] < 12))

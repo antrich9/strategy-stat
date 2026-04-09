@@ -1,0 +1,16 @@
+# Detect new FVGs
+bull_fvg_detected = (df['low'] - df['high'].shift(2)) > atr * fvg_th
+bull_fvg_detected &= df['low'] > df['high'].shift(2)
+bull_fvg_detected &= df['close'].shift(1) > df['high'].shift(2)
+bull_fvg_detected &= ~(bull_gap | bull_gap.shift(1))
+
+bear_fvg_detected = (df['low'].shift(2) - df['high']) > atr * fvg_th
+bear_fvg_detected &= df['high'] < df['low'].shift(2)
+bear_fvg_detected &= df['close'].shift(1) < df['low'].shift(2)
+bear_fvg_detected &= ~(bear_gap | bear_gap.shift(1))
+
+# Update bounds on detection
+df['bull_fvg_upper'] = np.where(bull_fvg_detected, df['high'].shift(2), np.nan)
+df['bull_fvg_lower'] = np.where(bull_fvg_detected, df['low'], np.nan)
+df['bear_fvg_upper'] = np.where(bear_fvg_detected, df['high'], np.nan)
+df['bear_fvg_lower'] = np.where(bear_fvg_detected, df['low'].shift(2), np.nan)

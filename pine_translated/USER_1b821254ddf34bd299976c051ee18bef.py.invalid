@@ -1,0 +1,72 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    # Ensure chronological order
+    df = df.sort_values('time').reset_index(drop=True)
+
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    volume = df['volume']
+
+    # ----- Indicator calculations -----
+    # Shifted highs/lows for FVG detection
+    high_2 = high.shift(2)
+    low_2 = low.shift(2)
+
+    # Basic Fair Value Gap (FVG) conditions
+    bfvg_raw = low > high_2
+    sfvg_raw = high < low_2
+
+    # Filters (all disabled by default in the original script)
+    volfilt = pd.Series(True, index=df.index)          # volume filter disabled
+    atrfilt = pd.Series(True, index=df.index)          # ATR filter disabled
+    loc = close.rolling(54).mean()
+    loc2 = loc > loc.shift(1)
+    locfiltb = pd.Series(True, index=df.index)         # trend filter disabled
+    locfilts = pd.Series(True, index=df.index)
+
+    # Combined FVG series with filters
+    bfvg = bfvg_raw & volfilt & atrfilt & locfiltb
+    sfvg = sfvg_raw & volfilt & atrfilt & locfilts
+
+    # Higher‑timeframe trend (daily close) and its EMA‑50
+    # In a single‑timeframe DataFrame we treat `close` as the daily series.
+    ema50 = close.ewm(span=50, adjust=False).mean()
+
+    # ----- State variables -----
+    entries = []
+    trade_num = 1
+    lastFVG_prev = 0  # 0 = none, 1 = bullish, -1 = bearish
+
+    # ----- Iterate bars -----
+    for i in range(len(df)):
+        # Extract values (treat NaN as False for boolean series)
+        bfvg_i = bool(bfvg.iloc[i]) if not pd.isna(bfvg.iloc[i]) else False
+        sfvg_i = bool(sfvg.iloc[i]) if not pd.isna(sfvg.iloc[i]) else False
+        close_i = close.iloc[i]
+
+        # EMA‑50 must be available
+        ema50_i = ema50.iloc[i] if not pd.isna(ema50.iloc[i]) else None
+
+        # If EMA not ready, still update lastFVG according to the script's priority
+        if ema50_i is None:
+            if bfvg_i:
+                new_lastFVG = 1
+            elif sfvg_i:
+                new_lastFVG = -1
+            else:
+                new_lastFVG = lastFVG_prev
+            lastFVG_prev = new_lastFVG
+            continue
+
+        # Entry signals
+        bullish_entry = bfvg_i and lastFVG_prev == -1 and close_i > ema50_i
+        bearish_entry = sfvg_i and lastFVG_prev == 1 and close_i < ema50_i
+
+        # ----- Record entries -----
+        if bullish_entry:
+            ts = int(df['time'].iloc[i])
+            entry_time_str = datetime.fromtimestamp(ts, tz

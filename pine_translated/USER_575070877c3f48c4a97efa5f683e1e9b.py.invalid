@@ -1,0 +1,33 @@
+hl2 = (df['high'] + df['low']) / 2
+       def calc_smma(src, length):
+           # Wilder's smoothing
+           return src.ewm(alpha=1/length, adjust=False).mean()
+       # Or implement manually to handle NaN initially?
+       # Pine: smma := na(smma[1]) ? ta.sma(src, length) : (smma[1] * (length - 1) + src) / length
+       # This means the first `length` bars use SMA, then switch to EMA.
+       # In pandas, ewm with alpha=1/length handles this naturally if we set min_periods=length? No, ewm starts from the first non-NaN value.
+       # Actually, `ta.sma(src, length)` is used when smma[1] is NaN. This happens for the first `length` bars.
+       # So we need to handle this: for the first `length-1` bars (0 to length-1), smma is NaN? Or does ta.sma return NaN if not enough data?
+       # `ta.sma(src, length)` returns NaN if fewer than `length` bars are available.
+       # Then when `length` bars are available, it calculates the SMA.
+       # Then from the next bar, it uses the SMMA formula.
+       
+       # So in Python, we can do:
+       # 1. Calculate SMA for the first `length` bars (actually, we need `length` bars for SMA, so bars 0 to length-1 might be NaN depending on the lookback).
+       # 2. Then calculate the SMMA for the rest.
+       
+       # But pandas ewm with alpha=1/length and adjust=False is equivalent to SMMA if we start from bar `length`.
+       # Let's test: alpha = 1/length.
+       # SMA is used to initialize.
+       
+       # I'll implement it manually:
+       smma_values = []
+       for i in range(len(src)):
+           if i < length - 1:
+               smma_values.append(np.nan)
+           elif i == length - 1:
+               smma_values.append(src.iloc[:length].mean())
+           else:
+               prev = smma_values[-1]
+               smma_values.append((prev * (length - 1) + src.iloc[i]) / length)
+       return pd.Series(smma_values, index=src.index)

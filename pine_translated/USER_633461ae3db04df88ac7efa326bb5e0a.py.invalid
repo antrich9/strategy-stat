@@ -1,0 +1,272 @@
+The user wants me to convert a Pine Script strategy into a Python function that generates entries. Let me analyze the Pine Script code to understand the entry logic.
+
+Looking at the Pine Script, I need to identify where `strategy.entry()` calls are made. Let me read through the code carefully.
+
+Looking at the code, I see:
+1. There's a `tradeDirection` input that can be "Long", "Short", or "Both"
+2. There's breakout detection (sBreak for support, rBreak for resistance)
+3. There's retest detection (sRetValid, rRetValid)
+
+The key entry logic seems to be related to the breakout and retest conditions. However, I don't see explicit `strategy.entry()` calls in the provided Pine Script. Let me re-read...
+
+Wait, looking more carefully, I see the code has:
+- Breakout events (cu for support break, co for resistance break)
+- Retest events (sRetValid, rRetValid)
+
+The strategy appears to be about breakouts and retests. Looking at the conditions:
+- For long entries: likely when support breaks (cu) and then there's a retest (sRetValid)
+- For short entries: likely when resistance breaks (co) and then there's a retest (rRetValid)
+
+But I need to find the actual entry logic. Let me look more carefully...
+
+Actually, I notice the Pine Script doesn't seem to have explicit `strategy.entry()` calls visible in the provided snippet. Let me check again...
+
+Looking at the alert conditions:
+- `alertcondition(ta.barssince(na(sBreak)) == 1, 'Support Breakout')`
+- `alertcondition(ta.barssince(na(rBreak)) == 1, 'Resistance Breakout')`
+- `alertcondition(sRetValid, 'Support Retest')`
+
+It seems the entry logic is likely based on:
+1. A breakout occurs (sBreak or rBreak becomes true)
+2. A retest occurs after the breakout (sRetValid or rRetValid)
+
+
+3. The trade direction setting determines whether we take long, short, or both positions. Support breakouts with retests likely trigger long entries, while resistance breakouts with retests trigger short entries.
+
+I need to implement this logic in Python, focusing on detecting breakouts and subsequent retests to generate entry signals. The implementation should mirror the Pine Script's approach of identifying support and resistance breaks followed by valid retest conditions.
+
+The strategy involves calculating dynamic support and resistance levels using pivot points, then tracking when price breaks these levels and subsequently retests them. I'll need to carefully track the state changes and ensure the entry logic captures both the breakout and retest components accurately. , label.style_label_lower_left, 'pl')
+
+The core trading logic centers on two main conditions: entering long positions after a support breakout followed by a successful retest, and entering short positions after a resistance breakout with its corresponding retest validation.
+
+For implementation, I'm using pivot points with a 20-bar lookback period to identify support and resistance levels. The breakout detection tracks when price crosses below the support box bottom or above the resistance box top, with repainting logic handling different confirmation modes. The retest condition verifies the breakout occurred at least 2 bars ago and price subsequently touched the box boundary, ensuring the retest has adequate historical context before triggering entry signals.
+
+Long entries trigger when the support breakout is confirmed and the subsequent retest validates, while short entries require the resistance breakout confirmation paired with its retest verification. The `tradeDirection` parameter controls which direction to execute—if set to "Long", only long entries generate; if "Short", only short entries generate; if "Both", both directions execute.
+
+The entry logic flows from breakout detection through retest confirmation: first identifying the breakout (cu for support, co for resistance), then validating the retest (sRetValid for longs, rRetValid for shorts), and finally executing the trade when both conditions align.
+
+Since the code uses box objects rather than simple line calculations, I'll need to compute support and resistance levels directly using pivot highs and lows. For the retest validation, I need to ensure the retest bar follows the breakout by checking the bar count between events, verify price action matches the retest conditions (price touching or approaching the support/resistance level), and account for the repainting logic based on the selected mode.
+
+Let me structure the implementation to handle this properly. Actually, I need to reconsider the pivot calculation. The `ta.pivotlow` function in TradingView finds the lowest low where both left and right bars are higher, with the parameters specifying the left and right leg lengths. So `ta.pivotlow(low, bb, bb)` with `bb=20` identifies the lowest point among the 20 bars to the left and 20 bars to the right of the current bar.
+
+In pandas, I'd need to calculate this manually using rolling windows to find local lows, which becomes computationally expensive since every pivot requires checking a 41-bar window. For a practical backtesting implementation, I should focus on the core entry logic using available price data rather than implementing a full pivot detection system.
+
+The strategy involves detecting breakouts—when price crosses below support or above resistance—and then identifying retests where price touches the broken level again. I'll simplify by computing rolling support and resistance levels, then checking for breakout conditions using cross functions, and validating retests within a specified number of bars after the initial break.
+
+To keep this manageable, I'll assume the lookback period is fixed at 20 bars and calculate the highest high and lowest low over that window as proxy resistance and support levels. From there, I can track when breakouts occur and how many bars have passed since the break to filter for valid retest entries.
+
+The calculation needs to handle edge cases—checking if the current bar is far enough from the edges to safely compute the window, and skipping periods where the lookback window isn't fully available. For confirmed bars, I should only calculate on the final bar of the candle to avoid premature signals.
+
+Pivot points require checking that there are enough bars on both sides of the current bar. For a left and right lookback of n, I need at least n bars before and after to compute the pivot. So for the 20-bar lookback in this strategy, the first valid pivot calculation happens at bar index 20, requiring at least 20 bars of prior history. Since the data starts from index 0, valid pivot calculations begin at index 40.
+
+Rather than implementing a full pivot detection system, I should focus on extracting the core entry logic and working with the available OHLC data. The pivot functions add complexity for backtesting, so I'll simplify by calculating swing highs and lows directly from the price series using rolling window operations.
+
+The key is handling NaN values during the warm-up period and using close prices for entry signals. I'll need to map the Pine Script's boolean flags like sBreak and rBreak into Python, then apply the same cross detection logic for breakouts and subsequent retests.
+
+For the pivot calculations, I'm using a rolling window approach: `pivothigh` finds the highest high where the current bar is the maximum within a symmetric window, and `pivotlow` does the same for the lowest low. The `fixnan` function simply replaces NaN values with the previous element, keeping the last valid pivot point.
+
+For box creation, I track when pivots change using `ta.change(pl)` to detect new support and resistance levels. The horizontal position of these boxes is offset by `bb` bars, so each box extends from `bar_index - bb` to the current bar. I need to track these box boundaries to determine where breakouts occur.
+
+To implement this in Python, I'll need to compute pivot highs and lows, then determine when price crosses above or below the upper and lower bounds of these boxes. The repainting logic determines how to calculate these crossovers and crossunders depending on whether the strategy is set to repaint or not. a lookback window and find the pivot point. For pivot high, I need the current bar to be the highest within the window. For pivot low, it needs to be the lowest. Since a simple rolling max/min won't capture the requirement that the pivot is at the center of the window, I need to check if each bar in the window is lower (for high) or higher (for low) than the current bar, with equal values allowed.
+
+Let me reconsider the approach. Using a centered rolling window with pandas:
+
+def rolling_pivot_high(high, left, right):
+    n = left + 1 + right
+    result = np.full(len(high), np.nan)
+    for i in range(left, len(high) - right):
+        window = high.iloc[i-left:i+right+1]
+        if high.iloc[i] == window.max():
+            result[i] = high.iloc[i]
+    return pd.Series(result, index=high.index)
+
+This iterates through each bar, checks if the current bar is the maximum in the surrounding window, and marks it as a pivot if true. For pivot low, I'd use `.min()` instead.
+
+The overall structure builds support and resistance boxes by identifying pivot points, then uses these to detect breakouts and retests. I'm calculating pivot highs and lows, building boxes from those pivots, and tracking when price crosses above resistance (co) or below support (cu). When a breakout occurs, I flag it, and then look for retest conditions. The key is handling the repainting logic—which determines whether we use current or previous bar data—along with managing box states and detecting valid entry points. I need to implement this carefully to avoid lookahead bias and properly track box boundaries. i] == window.max() if it's a pivot high
+
+pivot_low = pd.Series(np.nan, index=df.index)
+for i in range(bb, len(df) - bb):
+    window = df['low'].iloc[i-bb:i+bb+1]
+    if df['low'].iloc[i] == window.min():
+        pivot_low.iloc[i] = df['low'].iloc[i]
+
+For pivot highs, I iterate through the range where there's sufficient data on both sides, extracting a symmetric window around each index. If the current bar equals the maximum of that window, it's identified as a pivot high and stored. The same logic applies for pivot lows with the minimum value instead.
+
+I should cache the rolling windows to avoid redundant calculations. The implementation can be optimized by pre-computing the windows once and reusing them for both pivot detection logic. This means calculating `bb` bars to the left and right of each index, then checking if the current bar represents the extreme value within that range for both highs and lows.
+
+For the support and resistance boxes, I need to determine the vertical positioning based on the surrounding bars. If the bar ahead is higher than the current bar, I use the bar ahead; otherwise, I use the bar behind. The same logic applies to resistance levels with high prices instead of low.
+
+Regarding the repaint logic, the strategy uses different confirmation methods depending on the selected mode—on bar close, bar confirmation, or historical values. When repainting is enabled, crossover and crossunder calculations use the current close. When disabled, they check if the bar is confirmed and use the appropriate price action. The logic determines whether to treat the current bar's close as the signal or wait for confirmed market behavior. The crossunder and crossover functions check the current and previous bars to detect when one series crosses above or below another. For the entry logic, I'm checking when support and resistance breakouts occur, then verifying if a retest condition is met. The strategy appears to trigger entries on valid retests following a breakout, though I should verify the exact entry conditions match the intended logic.
+
+The entries fire on retest conditions (sRetValid or rRetValid), with trade direction filtering what gets recorded. Each trade captures the direction, entry timestamp, price, and metadata about the breakout and retest levels. I need to ensure the indicator calculations align with the original strategy's logic.
+
+The bullish/bearish components use weighted and simple moving averages of RSI differences, but since they only drive visualization and alerts rather than trade entries, I can focus on the core breakout and retest mechanics. For performance, calculating pivots efficiently matters since a naive approach checking all windows would be slow. I'll implement an optimized pivot calculation that uses rolling statistics to avoid the O(n²) complexity of examining every surrounding bar for each position. I'll set up a NumPy array initialized with NaN values for the pivot highs. For each position, I extract the window boundaries and check if the current bar's high is the maximum within that range. If it is, I mark it as a pivot point; otherwise it remains NaN. This approach should be more efficient than the pandas method I was considering.
+
+For the entry conditions, I'm looking for a long entry when both the support breakout and the support retest conditions are met, and a short entry when the resistance breakout and resistance retest both occur. I'll filter these based on the trade direction parameter and iterate through the dataframe to check the conditions. For the index-based access to previous values, I need to handle the first bar carefully by checking if we're at index 0 and falling back to NaN for the previous value. The pivot calculation also needs proper initialization with NaN values at the start to account for the lookback period. The box calculations for support and resistance levels involve conditional logic based on surrounding bar prices, which requires careful handling of the lookback window. (s_bot[i])
+        else:
+            r_break[i] = False
+    else:
+        r_break[i] = False
+    
+    # Retest conditions (support)
+    if s_break[i] and s_ret_valid[i]:
+        if not s_ret_occurred:
+            s_ret_occurred = True
+    else:
+        s_ret_occurred = False
+    
+    # Retest conditions (resistance)
+    if r_break[i] and r_ret_valid[i]:
+        if not r_ret_occurred:
+            r_ret_occurred = True
+    else:
+        r_ret_occurred = False
+
+I need to reconsider the logic flow here. The s_break and r_break flags should persist until the pivot changes, which means I can't reset them in every iteration. Let me restructure the approach to properly track these states across multiple bars.
+
+When a new support pivot is detected, I reset s_break to False only if it was already set. Similarly for r_break with resistance pivots. The key is maintaining the state between pivot changes rather than resetting it constantly.
+
+For the retest logic, I need to check if we're within the valid bar window after a breakout occurs, then verify the price conditions. The retest becomes valid when price crosses back through the broken level within the specified number of bars. The retest event fires on the transition from no retest to active retest, capturing the high value at that moment using valuewhen logic.
+
+For implementation, I'd track when the retest condition first becomes true, then use barssince to determine if we're still within the valid window. The code would check each bar to see if a new retest has started, calculate how many bars have elapsed, and evaluate whether the current bar meets the retest criteria while ensuring we haven't already had a retest occur.
+
+The event triggers whenever retActive transitions from false to true, and retValue captures the high price at that moment. However, if the current retest's low is worse than the previous retest's low, the event should be suppressed entirely.
+
+The core logic then continues: retValue gets reassigned after the conditional check. When a retest event fires, I reset retOccurred and create a label at the retest's bar location with the high price from that bar. If a second label exists, I delete the oldest one to maintain only the most recent labels.
+
+The conditions that trigger a retest vary depending on the type—'ph' uses repainted close values versus high values for confirmation. A retest is valid only within the specified bar range and when the conditions are met without a prior retest occurring. Finally, I verify the exit conditions to determine if the retest should be marked as complete.
+
+For the Python implementation, I need to track retest events and their associated values across bars. I'll store the retest event flags, the price levels at those events, and maintain a counter of bars elapsed since each retest began. This allows me to evaluate the retest conditions and exit logic systematically throughout the iteration.
+
+When a retest occurs, I set retOccurred to NaN and record the retValue. I also need to check if the current conditions are met—specifically whether we're within the valid window and if the price has crossed above or below the retValue depending on the direction (ph vs pl). The retValid flag captures when all conditions align. If retValid is true or we've exceeded the input_retValid threshold, I should reset the retOccurred state. I also need to reset the tracking when the pivot changes to ensure clean state for the next retest cycle.
+
+For implementation, I'll track both retest events and their validation states in arrays. The key is handling the arraysize check properly—if it's zero, array.first() returns NaN. After confirming the retest event and updating the retValue, I can evaluate whether the conditions warrant a valid retest signal.
+
+The logic checks if bars have passed since the event and whether the current bar's movement aligns with the expected direction (high crossing for 'ph' type). When these conditions are met and we haven't already recorded a retest occurrence, the validation triggers.
+
+For the array management, I track each retest event by pushing the bar index and price level, then maintain the most recent values in separate variables so I can evaluate the next bar's conditions against the previous retest point. // Set new ret event
+                ret_event[i] = True
+                ret_occurred = False  # Reset for new ret
+    
+    # Check ret conditions
+    if not ret_occurred:
+        if ret_event[i]:
+            ret_valid[i] = True
+            ret_occurred = True  # Mark as occurred
+        elif bars_since_ret > input_retValid:
+            ret_valid[i] = False
+
+I need to track when a new retest event occurs versus when we're within an existing one. The key is checking if retActive just became true—if it did, that's a fresh event requiring reset. Then for subsequent bars, I only mark valid if we're within the tolerance window and conditions are met.
+
+For the 'ph' variant specifically, the condition checks if close crosses above retValue, but that happens every bar after the event, so I should refine this logic to only trigger on the actual crossing moment rather than持续的above check. For 'pl', the condition is `close <= retValue`, which also triggers continuously. Looking back at the Pine Script logic, I need to understand how `retConditions` actually evaluates.
+
+The `retConditions` are only checked once per retest event—when `retValid` is true—so the continuous nature of the condition doesn't create repeated triggers. For 'ph', the repaint checks if `close >= retValue`, `high >= retValue`, or `close >= retValue` with bar confirmation. For 'pl', it checks if `close <= retValue`, `low <= retValue`, or `close <= retValue` with bar confirmation.
+
+In the Python implementation, I'm setting `retValid[i] = True` whenever `retConditions` are met, which mirrors the original logic. The `retConditions` check happens at bar i when `retValid` is being evaluated, and if the condition is satisfied at that moment, the retest is marked valid.
+
+Looking at the repaint logic more carefully: when `rTon` is true, `retConditions` evaluates to `close >= retValue`. When `rTcc` is true, it checks `close >= retValue and barstate.isconfirmed`. The `barstate.isconfirmed` condition ensures we're using the close of the current bar only, which is crucial for the candlestick confirmation mode.
+
+In Python, I'll handle this by checking the repaint setting first—if it's active, I use the current close directly; if it's not, I verify the bar is confirmed before applying the condition. This way, the logic correctly prevents repainting by only evaluating confirmed bars when the setting requires it.
+
+For the pivot calculations, I need to identify local extremes in the price data. A pivot high occurs when a bar's high exceeds all surrounding bars within the lookback window, and similarly for pivot lows with the low prices. I'll compute both pivot high and pivot low series to capture these turning points, which will be essential for determining support and resistance levels.
+
+For each position within the valid range, I extract the window of high prices and check if the current bar's high equals the maximum value in that window. When the condition is met, I assign the current high as the pivot value; otherwise it remains undefined. The same approach applies to pivot lows using the minimum function. I also need to calculate the ATR indicator with a 14-period window to measure market volatility.
+
+The ATR calculation requires computing the true range across three components: the high-low range, the high-close distance, and the low-close distance. I take the maximum of these three values for each bar, then apply Wilder's smoothing method using an alpha of 1/14 to create the ATR series. The box calculations for support and resistance levels involve comparing adjacent bars to determine which price point forms the boundary.
+
+For the support box bottom, I check whether the bar at position bb+1 is higher than the bar at bb-1, selecting the lower of the two. Similarly, for the resistance box top, I compare the same two bars but take the higher value. This establishes the horizontal bounds for the support and resistance zones.
+
+The breakout logic then evaluates whether price has crossed below the support level or above the resistance level, with different conditions based on the repaint setting. When rTon is enabled, it uses close prices directly; otherwise it checks the low for support breaks and high for resistance breaks. The crossunder and crossover functions detect when one series transitions below or above another series.
+
+For confirmed bars in rTcc mode, I need to verify the bar is actually closed before allowing the breakout signal through. The logic applies the same crossover/crossunder detection but only when the bar state is confirmed, preventing premature signals on incomplete candles.
+
+On the first bar, previous values don't exist so I default them to NaN. The cross detection checks if the current values cross while the previous values didn't, handling the edge case where prior data is missing.
+
+Pivot changes reset the breakout flags—if a new support pivot appears and no breakout occurred, I delete the old box. The logic checks for pivot changes, confirms no breakout happened yet, and then clears the state accordingly.
+
+When a resistance pivot shifts, I follow the same pattern: verify the change, ensure no breakout triggered, and reset the flags. This handles both directions of breakout detection cleanly.
+
+For support and resistance, I'm checking if a breakout occurred and whether a retest is valid—tracking long entries when support breaks with a confirmed retest, and short entries when resistance breaks with its corresponding retest validation.
+
+The key consideration is how `tradeDirection` filters these entries. Since the default is "Both", I should allow both long and short signals through unless the parameter restricts it to one direction only. I need to reconsider how to track retest events. The current approach of checking if `bars_since_ret == 0` won't work because a retest can span multiple bars.
+
+Looking at the Pine Script logic more carefully: `retEvent` triggers when `retActive` transitions from false to true (bars_since_ret == 0), then `retValue` gets set to the price at that moment. The validation happens on subsequent bars when bars_since_ret exceeds zero. This means I need to distinguish between the initial retest event and the ongoing retest validation phase.
+
+For the implementation, I'll track `ret_event[i]` to identify when a retest begins, then use that timestamp to determine if the current bar falls within the valid retest window and meets the crossing condition. 1, 0)` captures the first value. The issue is distinguishing between a new retest event and bars that follow an existing one. If `retActive[i]` is true but `retActive[i-1]` was false, that signals a fresh retest. Otherwise, it's just a continuation where I need to check whether the current bar meets validation criteria.
+
+To track this, I can use `ret_occurred` to mark when a valid retest has happened. When `ret_event[i]` triggers, I set `ret_occurred` to False and store `retValue`. Then on subsequent bars, if `ret_occurred` is still False and the bars-since counter falls within the threshold, I evaluate whether the condition is satisfied. Once satisfied, `ret_occurred` becomes True, preventing duplicate processing.
+
+For the 'ph' type specifically, the condition checks if the price crosses above a threshold. I need to clarify whether this means the price strictly exceeds the value at the retest event, or if there's additional confirmation logic involved.
+
+Looking at the variable naming and the broader context, 'ph' appears to represent "pivot high" based on how the function is invoked with `high, low` parameters. This suggests the validation logic is tied to price movement relative to a prior pivot point rather than just a simple comparison.
+
+The condition `y2 < ta.valuewhen(retEvent, y2, 0)` evaluates to `low < retValue`, which means a retest is only valid when the current low drops below the previous retest's low. This creates a progressive weakening pattern where each successive retest must reach lower levels to confirm the downward momentum. The validation gates subsequent retests through this stricter criterion, filtering out weaker bounces that don't demonstrate continued selling pressure. For 'pl' type, the condition checks if the low exceeds the previous retest's low, which makes sense as a strengthening criterion.
+
+The function signature shows 'ph' uses high and low values while 'pl' swaps them, suggesting different polarity for each pattern type. The condition logic should be inverted based on which pattern we're checking.
+
+For 'ph', a lower low indicates a retest; for 'pl', a higher high indicates a retest. This asymmetry reflects how support and resistance levels behave differently depending on the direction of the move. The condition logic differs based on the pattern type. For 'ph' (pivot high / resistance), the retest is valid when the low drops below the retValue, confirming a retest of resistance. For 'pl' (pivot low / support), the retest is valid when the high exceeds the retValue, confirming a retest of support. The condition updates the retEvent flag whenever a retest occurs, but only after the initial assignment to ensure we capture the correct retValue. When a retest event is detected, the code initializes or resets `retOccurred` to NaN and stores the retValue based on the pattern type. For 'ph', it captures the high price at the retest bar and pushes a label to the tracking array. If there are already two labels in the array, it removes the oldest one. For 'pl', the logic follows similarly but with the low price instead.
+
+The retConditions are then calculated based on the pattern type: 'ph' checks if the close or high crosses above the retValue, while 'pl' checks if the close or low crosses below it. The repaint logic handles different scenarios depending on whether real-time repainting is enabled or if we're using candle confirmation. A retest is considered valid when there have been bars since the event, it falls within the allowed range, and the conditions are met without a prior retest occurring.
+
+If a retest is valid, a label is created at the retest bar with appropriate styling and color. When the retest becomes invalid or exceeds the valid range, the oldest label is deleted. The box is updated if the pattern type is 'ph' and there are changes to the pivot point, with the right edge adjusted based on how many bars have passed since the retest. The `retOccurred` state is then reset. In the Python implementation, I'm tracking retValid as a boolean to indicate whether a retest occurred and meets the conditions, with logic to handle the state transitions based on bar counts and pattern types. The close price at bar i represents the entry point for the retest, matching the Pine Script's behavior where retValid is evaluated on the same bar as the conditions. I need to verify the condition logic—when `repaint` is true, the condition uses `close >= retValue` rather than `high >= retValue`. For the 'pl' type with repaint enabled, this would check if the close price at bar i is at or below the retest value, which determines whether the retest entry is valid.
+
+The entry signal should trigger at bar i since that's where `retValid` evaluates to true. I'm using `df['close'].iloc[i]` as the entry price, which aligns with the repaint logic. The ATR calculation needs to follow Wilder's smoothing method, starting with the SMA of the first true range values, then applying the smoothing formula across subsequent bars.
+
+For the Python implementation, I'm setting up the indicator lengths as constants since they weren't exposed as inputs in the strategy. The parameters like `input_retValid`, `input_retSince`, and the ASH indicator settings (`smoothK`, `smoothD`, `lengthRsi`, `lengthWma`) are being hardcoded with their default values from the original Pine Script.
+
+I'm also noting the other default parameters like `input_lookback = 20`, `input_repType = 'On'`, and the breakout/retest toggles, along with the styling options that won't impact the logic itself. Now I need to implement the function with these fixed parameters and start writing the Python code to calculate the ASH indicator.
+
+First, I'll compute the RSI values using Wilder's smoothing method with alpha = 1/14. Then I'll calculate the ASH components by taking the difference between two RSI periods, applying a weighted moving average to that spread, and smoothing the result with a simple moving average. The bullish signal triggers when the smoothed K value exceeds the D value.
+
+For the ATR calculation, I need to handle NaN values in the high, low, and close columns by filling them with forward values, then compute the true range as the maximum of the high-low spread, the absolute difference between high and previous close, and the absolute difference between low and previous close. The ATR itself uses Wilder's smoothing with an alpha of 1/14.
+
+Next I'm calculating pivot points to identify support and resistance levels. For the pivot high, I need to find where the current high is greater than or equal to all values within a symmetric window around it—that means checking both the left and right sides of the current bar to ensure it's a true local maximum.
+
+For the pivot low, I'm looking for the opposite: where the current low is less than or equal to all values in the window. This creates a complementary set of pivot points that mark potential reversal zones.
+
+Once I have these pivot series, I'll forward-fill any NaN values so the last known pivot point persists until a new one is detected. This ensures the support and resistance levels remain visible even after the pivot bar has passed.
+
+Then I'm calculating ATR using Wilder's smoothing method with a 14-period window to measure market volatility. For the box boundaries, I'm comparing adjacent bar values to determine the upper and lower bands—if the second bar exceeds the first, use the first; otherwise use the second. The breakout logic then checks whether price crosses below the lower band (for support breaks) or above the upper band (for resistance breaks).
+
+When `input_repType` equals 'On', I use closing prices directly. For 'High & Low' mode, I'm checking the low for support breakouts and high for resistance breakouts. The 'Candle Confirmation' setting only triggers on confirmed bars where the close crosses the box boundary. I also need to handle the previous bar's values to properly detect crossovers. 0 (treated as False)
+- co = False
+
+At bar 21 (i=21):
+- co = True (close crosses above resistance box)
+- r_break = True
+
+The logic tracks when a breakout occurs by checking if the current close crosses above the resistance box while the previous bar's close was below it. Once r_break is set to True, it remains true until a pivot high change resets it. This means we can enter on the retest that follows the breakout, which aligns with the strategy's intent.
+
+Now I need to track retest events and their validation. I'll create arrays to monitor retest status and the values at each event. For support retests, I check if there's an active breakout and a valid retest condition. Similarly for resistance retests, I verify the breakout state and retest validity. Each bar checks whether the conditions align with the direction we're tracking—long for support, short for resistance. The `bars_since_ret` calculation handles the initial bars where no retest exists yet.
+
+When a retest event occurs, I need to reset the tracking state and store the current bar's high or low value depending on the direction. The `ret_event` flag captures when a new retest begins, and `ret_value` holds the price level for comparison in subsequent bars.
+
+For tracking, I'm using `s_ret_occurred` and `r_ret_occurred` as flags to prevent duplicate processing. When `ret_event` triggers, these get set to False initially, allowing the validation logic to execute on the next bar. The condition checks whether we're still within the valid bar window and if the price has crossed the stored retest value in the expected direction—if `y2` is worse than the previous retest, we skip it.
+
+The validation differs by type: for 'ph' (pivot high), we need `low < ret_value` to confirm the retest, while for 'pl' (pivot low), we need `high > ret_value`. If the condition passes and we haven't already marked this as occurred, we set `ret_valid[i] = True` and flip the flag. The `bars_since` calculation handles the timing—it returns the number of bars elapsed since the last True value, or the total count if no True exists yet. Since `ret_event[i]` is True at the current bar, `bars_since` should equal 0, but the condition explicitly requires `bars_since > 0`, suggesting we need at least one bar to pass before validating.
+
+Looking at the Pine Script more carefully, the `retSince > 0` check appears designed to skip the bar where the event itself occurs. The reason is that `retValue` gets reassigned after the if-statement that checks `y2 < ta.valuewhen(...)`, so on the event bar itself, `retValue` might still hold the previous value rather than the new one. By waiting for the next bar, we ensure `retValue` has been properly updated before using it for validation. The sequence matters: on the retEvent bar, retValue gets set to y1[0] (the current bar's high), then the condition checks y2 < y1[0]. If that condition is true, retEvent becomes active on that same bar, which would make bars_since(retEvent) = 0 and trigger retValid immediately. This seems to happen on the event bar itself rather than waiting for the next bar. > 0
+
+For the Python implementation, I should start checking from the bar immediately after the retEvent occurs. When i equals the ret_event_bar, bars_since_ret equals 0, which fails the > 0 condition, so validation begins at i = ret_event_bar + 1. I need to handle the initial case where bars_since_ret is undefined. Using bars_since = i - ret_event_bar works when ret_event_bar is defined, but returns NaN or a large number when it's not. I'll set bars_since = np.nan initially and calculate it properly once a ret event occurs.
+
+For the validation logic, I need to handle three cases: when there's no prior ret event (skip), when bars_since is exactly 0 (this is the ret event bar itself, so skip), and when bars_since >= 1 (check if we're within the valid window and the condition is met). The condition y2 < ret_value or y2 > ret_value depends on the signal type, and I only set ret_valid when both the range check passes and the condition is satisfied.
+
+For 'pl' signals, the condition checks if the current close crosses above the previous retest value, which would invalidate the signal since we want the close to stay below the retest level. The repaint parameter affects which price series is used for this check—either the close directly or the high with confirmation. low (bullish)
+- r3: low in [rBot, rTop]
+- r4: low in [rBot, rTop] AND close > rTop
+
+The key distinction: r1 and r2 check if the low reaches the bottom of the box and close stays within bounds, while r3 and r4 track when price enters the box range. For bullish retests, the low must penetrate the support level with close remaining below it, whereas bearish retests require the low to stay within the resistance boundaries and close to hold above the top.
+
+In the Python implementation, I'm checking whether price respects the box boundaries—specifically whether the high stays at or above the support bottom and the close doesn't breach the resistance top.
+
+For the bullish case, there are four conditions to validate: the high must reach the support level, then depending on where the close lands (above or below the support bottom), I ensure it doesn't exceed the top. If the close dips below the support bottom entirely, that's also acceptable as long as the high still touched support first.
+
+For bearish signals, the logic mirrors this but inverted—I check if the low penetrates the resistance top, then verify the close stays within the expected range relative to the bottom boundary. If the close exceeds the top, that's a failure condition. When the close falls below the bottom, the signal can still be valid as long as the low touched the top.
+
+The condition updates the ret event flag whenever any of these four scenarios occur. The valuewhen function captures the most recent value—either the high or low price depending on the direction—when a ret event triggers. If the subsequent bar's price action violates the expected behavior (moving further away from the breakout level), the ret event flag gets reset. Otherwise, the captured value remains in effect.
+
+For implementation, I need to track whether each bar qualifies as a ret event, retrieve the corresponding price value, and check if the next bar's movement invalidates the signal. The function checks whether the retest bar's y2 value satisfies the direction-specific condition—if y2 is worse than the stored ret_value for that direction, the retest becomes invalid. The ret_value then gets reassigned using ta.valuewhen to capture the y1 value at the moment of the ret event, ensuring we're tracking the correct reference point for subsequent validation.
+
+On subsequent bars, I evaluate whether the retest remains valid by checking if the bar count since the event falls within the valid window and whether the close price respects the expected range based on the direction. If these conditions hold and no retest has already occurred, I mark the bar as a valid retest and set the occurred flag to prevent duplicate processing.
+
+When a new ret event is detected, I reset the occurred flag and update the ret value accordingly. If we've exceeded the valid bar window, I clear the occurred flag

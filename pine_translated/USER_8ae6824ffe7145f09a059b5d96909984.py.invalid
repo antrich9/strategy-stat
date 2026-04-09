@@ -1,0 +1,106 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    # Default parameter values (mirroring the Pine Script inputs)
+    PDCM = 70                 # minimum body percentage
+    CDBA = 100                # ATR length
+    FDB = 1.3                 # body‑ATR factor
+    ma_len = 20               # slow MA period
+    ma_len_b = 8              # fast MA period
+    reaction_ma_1 = 1         # rising/falling length for slow MA
+    reaction_ma_2 = 1         # rising/falling length for fast MA
+    modo_tipo = 'CON FILTRADO DE TENDENCIA'   # default mode
+
+    # Ensure data is ordered by time
+    df = df.sort_values('time').reset_index(drop=True)
+
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    open_ = df['open']
+
+    # ---------- True Range and Wilder ATR ----------
+    prev_close = close.shift(1).fillna(close)
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+    atr = tr.ewm(alpha=1 / CDBA, adjust=False).mean()
+
+    # ---------- Elephant candle detection ----------
+    body = (close - open_).abs()
+    range_ = high - low
+    body_pct = body * 100 / range_.replace(0, np.nan)
+
+    VVE_0 = close > open_          # green candle
+    VRE_0 = close < open_          # red candle
+
+    VVE_1 = VVE_0 & (body_pct >= PDCM)
+    VRE_1 = VRE_0 & (body_pct >= PDCM)
+
+    VVE_2 = VVE_1 & (body >= atr.shift(1) * FDB)
+    VRE_2 = VRE_1 & (body >= atr.shift(1) * FDB)
+
+    # ---------- Moving averages (SMA) ----------
+    ma_slow = close.rolling(window=ma_len).mean()
+    ma_fast = close.rolling(window=ma_len_b).mean()
+
+    # ---------- Direction of MAs ----------
+    up_slow = ma_slow > ma_slow.shift(1)
+    down_slow = ma_slow < ma_slow.shift(1)
+    direction = pd.Series(
+        np.where(up_slow, 1, np.where(down_slow, -1, np.nan)),
+        index=df.index
+    ).ffill().fillna(0)
+
+    up_fast = ma_fast > ma_fast.shift(1)
+    down_fast = ma_fast < ma_fast.shift(1)
+    direction_b = pd.Series(
+        np.where(up_fast, 1, np.where(down_fast, -1, np.nan)),
+        index=df.index
+    ).ffill().fillna(0)
+
+    # ---------- Trend filters ----------
+    bull_trend = direction_b > 0
+    bear_trend = direction_b < 0
+
+    # ---------- Final entry signals ----------
+    if modo_tipo == 'CON FILTRADO DE TENDENCIA':
+        long_signal = VVE_2 & bull_trend
+        short_signal = VRE_2 & bear_trend
+    else:  # 'SIN FILTRADO DE TENDENCIA'
+        long_signal = VVE_2
+        short_signal = VRE_2
+
+    # ---------- Build entry list ----------
+    entries = []
+    trade_num = 1
+
+    for i in range(len(df)):
+        if pd.notna(long_signal.iloc[i]) and long_signal.iloc[i]:
+            ts = int(df['time'].iloc[i])
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': ts,
+                'entry_time': datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                'entry_price_guess': float(close.iloc[i]),
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': float(close.iloc[i]),
+                'raw_price_b': float(close.iloc

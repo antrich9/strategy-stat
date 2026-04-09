@@ -1,0 +1,57 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    time = df['time']
+    
+    n = len(df)
+    
+    high_shifted_1 = high.shift(1)
+    low_shifted_1 = low.shift(1)
+    high_shifted_2 = high.shift(2)
+    low_shifted_2 = low.shift(2)
+    close_shifted_1 = close.shift(1)
+    
+    tr1 = high - low
+    tr2 = (high - close_shifted_1).abs()
+    tr3 = (low - close_shifted_1).abs()
+    true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr1 = true_range.ewm(span=14, adjust=False, min_periods=14).mean()
+    
+    bullishFVG1 = high_shifted_2 < low
+    bearishFVG1 = low_shifted_2 > high
+    
+    i = 2
+    trade_num = 0
+    entries = []
+    in_position = 0
+    
+    ig_active = False
+    ig_direction = 0
+    ig_c1_high = np.nan
+    ig_c1_low = np.nan
+    ig_c3_high = np.nan
+    ig_c3_low = np.nan
+    ig_validation_end = 0
+    
+    while i < n:
+        if not ig_active:
+            if bullishFVG1.iloc[i]:
+                ig_active = True
+                ig_direction = 1
+                ig_c1_high = high_shifted_2.iloc[i]
+                ig_c1_low = low_shifted_2.iloc[i]
+                ig_c3_high = high.iloc[i]
+                ig_c3_low = low.iloc[i]
+                ig_validation_end = i + 4
+            elif bearishFVG1.iloc[i]:
+                ig_active = True
+                ig_direction = -1
+                ig_c1_high = high_shifted_2.iloc[i]
+                ig_c1_low = low_shifted_2.iloc[i]
+                ig_c3_high = high.iloc[i]
+                ig_c3_low =

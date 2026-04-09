@@ -1,0 +1,280 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    
+    # Extract price data
+    times = df['time'].values
+    opens = df['open'].values
+    highs = df['high'].values
+    lows = df['low'].values
+    closes = df['close'].values
+    
+    # Convert timestamps to datetime objects for session filtering
+    datetimes = pd.to_datetime(times, unit='s', utc=True)
+    
+    # Define session windows in UTC
+    asian_start, asian_end = pd.Timestamp('00:00', tz='UTC'), pd.Timestamp('09:00', tz='UTC')
+    london_start, london_end = pd.Timestamp('08:00', tz='UTC'), pd.Timestamp('17:00', tz='UTC')
+    ny_start, ny_end = pd.Timestamp('13:00', tz='UTC'), pd.Timestamp('22:00', tz='UTC')
+    trading_start, trading_end = pd.Timestamp('14:00', tz='UTC'), pd.Timestamp('17:00', tz='UTC')
+    
+    # Identify active sessions for each bar
+    is_asian = (datetimes.time >= asian_start.time()) & (datetimes.time <= asian_end.time())
+    is_london = (datetimes.time >= london_start.time()) & (datetimes.time <= london_end.time())
+    is_ny = (datetimes.time >= ny_start.time()) & (datetimes.time <= ny_end.time())
+    is_trading_window = (datetimes.time >= trading_start.time()) & (datetimes.time <= trading_end.time())
+    
+    # Track session-specific levels and calculate momentum indicators
+    asian_high = pd.Series(np.nan, index=df.index)
+    asian_low = pd.Series(np.nan, index=df.index)
+    london_high = pd.Series(np.nan, index=df.index)
+    london_low = pd.Series(np.nan, index=df.index)
+    ny_open = pd.Series(np.nan, index=df.index)
+    
+    # Initialize tracking variables
+    a_high = np.nan
+    a_low = np.nan
+    a_open = np.nan
+    a_close = np.nan
+    l_high = np.nan
+    l_low = np.nan
+    l_open = np.nan
+    l_close = np.nan
+    n_open = np.nan
+    
+    # Loop through data to identify session boundaries and compute metrics
+    for i in range(len(df)):
+        current_time = datetimes.iloc[i]
+        dt = current_time.time()
+        
+        # Asian session detection
+        if is_asian.iloc[i]:
+            if not (is_asian.iloc[i-1] if i > 0 else False):
+                a_high = highs[i]
+                a_low = lows[i]
+                a_open = opens[i]
+            else:
+                a_high = max(a_high, highs[i])
+                a_low = min(a_low, lows[i])
+            a_close = closes[i]
+            
+            asian_high.iloc[i] = a_high
+            asian_low.iloc[i] = a_low
+        
+        # London session detection
+        if is_london.iloc[i]:
+            if not (is_london.iloc[i-1] if i > 0 else False):
+                l_high = highs[i]
+                l_low = lows[i]
+                l_open = opens[i]
+            else:
+                l_high = max(l_high, highs[i])
+                l_low = min(l_low, lows[i])
+            l_close = closes[i]
+            
+            london_high.iloc[i] = l_high
+            london_low.iloc[i] = l_low
+        
+        # NY session detection
+        if is_ny.iloc[i]:
+            if not (is_ny.iloc[i-1] if i > 0 else False):
+                n_open = opens[i]
+            ny_open.iloc[i] = n_open
+    
+    # Compute momentum and range metrics for each session
+    asian_range = asian_high - asian_low
+    asian_momentum = a_close - a_open
+    london_range = london_high - london_low
+    london_momentum = l_close - l_open
+    
+    # Determine directional bias based on momentum strength
+    asian_bias = np.where(asian_momentum > 0, 1, np.where(asian_momentum < 0, -1, 0))
+    london_bias = np.where(london_momentum > 0, 1, np.where(london_momentum < 0, -1, 0))
+    
+    # Identify when London breaks through Asian range boundaries
+    london_break_asian_high = london_high > asian_high
+    london_break_asian_low = london_low < asian_low
+    
+    # Initialize prediction tracking variables
+    confidence_score = pd.Series(0, index=df.index)
+    current_bias = pd.Series(0, index=df.index)
+    
+    # Process predictions at the start of each NY session
+    for i in range(1, len(df)):
+        if is_ny.iloc[i] and not is_ny.iloc[i-1]:
+            score = 0
+            
+            # Check if Asian and London sessions show alignment
+            if asian_bias.iloc[i] == london_bias.iloc[i] and asian_bias.iloc[i] != 0:
+                score += asian_bias.iloc[i] * 40
+            
+            # Bullish scenario: London exceeds Asian highs with positive bias
+            if london_break_asian_high.iloc[i] and london_bias.iloc[i] > 0:
+                score += 25
+            
+            # Bearish scenario: London falls below Asian lows with negative bias
+            if london_break_asian_low.iloc[i] and london_bias.iloc[i] < 0:
+                score -= 25
+            
+            # Strong momentum conditions (magnitude exceeds 50% of range)
+            if abs(london_momentum.iloc[i]) > london_range.iloc[i] * 0.5:
+                score += london_bias.iloc[i] * 20
+            
+            # Continuation patterns: aligned sessions with confirmed breakouts
+            if london_bias.iloc[i] == asian_bias.iloc[i] and london_break_asian_high.iloc[i] and asian_bias.iloc[i] > 0:
+                score += 15
+            elif london_bias.iloc[i] == asian_bias.iloc[i] and london_break_asian_low.iloc[i] and asian_bias.iloc[i] < 0:
+                score -= 15
+            
+            confidence_score.iloc[i] = score
+            current_bias.iloc[i] = 1 if score > 30 else (-1 if score < -30 else 0)
+    
+    # Forward-fill bias values to maintain consistency across subsequent bars
+    current_bias = current_bias.ffill().fillna(0)
+    
+    # FVG detection logic
+    bfvg = (lows > highs
+
+.shift(2)) & ~pd.isna(highs.shift(2))
+    sfvg = (highs < lows.shift(2)) & ~pd.isna(lows.shift(2))
+    
+    last_fvg = 0
+    bullsharp = pd.Series(False, index=df.index)
+    bearsharp = pd.Series(False, index=df.index)
+    
+    for i in range(2, len(df)):
+        if bfvg.iloc[i] and last_fvg == -1:
+            bullsharp.iloc[i] = True
+            bearsharp.iloc[i] = False
+            last_fvg = 1
+        elif sfvg.iloc[i] and last_fvg == 1:
+            bearsharp.iloc[i] = True
+            bullsharp.iloc[i] = False
+            last_fvg = -1
+        elif bfvg.iloc[i]:
+            last_fvg = 1
+        elif sfvg.iloc[i]:
+            last_fvg = -1
+    
+    in_trading_window = is_trading_window & is_ny
+    
+    bullish_entry = bullsharp & in_trading_window & (current_bias == 1)
+    bearish_entry = bearsharp & in_trading_window & (current_bias == -1)
+    
+    entries = []
+    trade_num = 1
+    
+    for i in range(len(df)):
+        if bullish_entry.iloc[i]:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': int(times[i]),
+                'entry_time': datetime.fromtimestamp(times[i], tz=timezone.utc).isoformat(),
+                'entry_price_guess': closes[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': closes[i],
+                'raw_price_b': closes[i]
+            })
+            trade_num += 1
+        elif bearish_entry.iloc[i]:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': int(times[i]),
+                'entry_time': datetime.fromtimestamp(times[i], tz=timezone.utc).isoformat(),
+                'entry_price_guess': closes[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': closes[i],
+                'raw_price_b': closes[i]
+            })
+            trade_num += 1
+    
+    return entries
+
+I need to handle NaN values properly in the FVG calculation since the high[2] and low[2] references won't have valid data at the start. Also, I should be more careful about when the bias calculation resets at the NY session boundary and ensure the logic properly tracks momentum shifts across session transitions. Momentum calculation depends on having both session close and open values available. When the NY session begins, the Asian and London sessions have already closed, so I have all the data needed to compute momentum and generate predictions at that point.
+
+The FVG detection checks if the current bar's low exceeds the high from two bars back (bullish) or the current high falls below the low from two bars back (bearish). The `barstate.isconfirmed` condition ensures the signal only triggers on completed bars, which aligns with iterating through historical data where all bars are finalized.
+
+For the bias forward-fill, the logic should capture the predicted direction at each NY session start, then maintain that bias until the next NY session begins. The Pine Script's reset condition `if isNYSession and not isNYSession[1]` identifies the first bar of each NY session, which is where the bias gets recalculated.
+
+In Python, I need to handle the initial state carefully. At the first bar where NY session begins, the bias should be recalculated fresh rather than relying on a forward-filled value. For subsequent bars within the same session, the bias carries forward from the last recalculation point.
+
+Looking at the loop structure, when `is_ny.iloc[i]` is true but `is_ny.iloc[i-1]` is false, that's the session start and I should compute a new bias value. Otherwise, I can either keep the previous bias or explicitly set it to 0 if the session hasn't started yet. Since the bias carries across bars within the same session, I need to ensure the forward-fill handles this correctly—setting the bias only at session starts and letting it propagate through the remaining bars. The bias calculation uses a threshold of 30 for both bullish and bearish conditions. I need to be more explicit about how confidence scores map to bias values. For the FVG detection, the bullish signal triggers when the current low exceeds the high from two bars back, and bearish when the high falls below the low from two bars back. The direction then gets confirmed based on whether a bullish FVG follows a bearish one or vice versa, otherwise maintaining the previous direction.
+
+For session boundaries, I'm checking if the current bar falls within each session's time window. The `time` function in Pine returns the bar's timestamp when it matches the session, or na otherwise. I should verify whether `time` returns the bar's open time or another reference point for determining session inclusion.
+
+In this case, since the timestamps are Unix epoch seconds aligned to bar open times, I can convert them to datetime objects and compare against the session windows. For the Asian session (0000-0900 UTC), a bar qualifies if its timestamp falls within that range. I also need to handle the `isAsianSession[1]` comparison in Python to identify when a new session begins.
+
+The session tracking works by checking if the current bar is in the session but the previous bar wasn't—that's the session start. Then for each bar in the session, I update the high, low, and close values accordingly.
+
+For the Asian session, I check if we're currently in the session but weren't in the previous bar to identify the start. On subsequent bars within the session, I use `math.max` and `math.min` to track the highest high and lowest low seen so far. The close gets updated on every bar in the session.
+
+The key thing to verify is that `isAsianSession` returns `true` on every bar within the Asian session window, not just the first one.
+
+In my Python implementation, I need to check `is_asian.iloc[i]` to confirm we're in the session, then use `is_asian.iloc[i-1]` to detect the session start. For the first bar where `is_asian` becomes true, I'll initialize the high, low, open, and close values from the current bar's OHLC data.
+
+On subsequent bars within the session, I'll continuously update the high and low using max/min operations while maintaining the original open and current close. For bars outside the session, the session variables stay at their last values rather than resetting.
+
+When the session ends and `is_asian.iloc[i]` becomes false, the tracked values persist for later reference. I should verify the logic handles the initial case where `i == 0` properly—checking `is_asian.iloc[i-1]` on the first iteration needs careful handling since there's no prior bar to reference.
+
+Since I'm starting the loop at `i = 1` and checking the previous bar's state, the first bar is automatically skipped, so I don't need special handling for the initial index. The Pine Script's `not isAsianSession[1]` condition on the first bar would evaluate the previous bar's value, which doesn't exist in Pine Script v5 (it returns na), effectively treating the first occurrence as a session start.
+
+For the momentum calculations, I need to track the close price at each session's end. The Asian session runs from 00:00-09:00 GMT, so I should capture the close when exiting that window. The same applies to the London session. Since the timestamp represents the bar's open time, I need to determine which bar's close actually marks the session's end—for the Asian session ending at 09:00 GMT, the bar that opens at or after 09:00 would be the closing reference point.
+
+My loop iterates through bars, and when `is_asian.iloc[i]` transitions from true to false, that's when the session ends, allowing me to record the final close value before moving to the next session.
+
+The key insight is that momentum should only be calculated once per session transition, not on every bar. By checking the condition `is_asian.iloc[i] and not is_asian.iloc[i-1]`, I capture the moment a session begins, then use the closing price from the previous session's last bar. For subsequent bars within the same session, I simply update the running high and low without recalculating momentum.
+
+The momentum formula `asianMomentum = asianClose - asianOpen` represents the difference between the session's final close and its opening price. This gets evaluated at the start of each new session, which is the appropriate timing since all necessary data points are available at that moment. I should apply the same logic to the London session momentum calculation.
+
+For the NY session bias, the condition `isNYSession and not isNYSession[1]` identifies the first bar of each NY session. Since `confidenceScore` resets to 0 at this point, any previous bias value gets discarded, which is the intended behavior. My implementation needs to capture this session-start trigger and ensure the bias calculation reflects the new session's momentum from the Asian and London sessions.
+
+The forward-fill operation on `current_bias` is appropriate here—it maintains the bias value throughout the trading window until the next NY session begins and recalculates. For the FVG detection, I need to be careful about how `barstate.isconfirmed` translates; in backtesting, all historical bars are confirmed, so the condition simplifies to just checking if the low exceeds the high from two bars back.
+
+For the momentum calculations, I'll initialize session variables as NaN and update them as each session progresses. The Asian and London sessions track their highs, lows, opens, and closes, while the NY session only needs to capture the opening price.
+
+During iteration, I detect session boundaries by checking when a session becomes active after being inactive. For Asian and London sessions, I update the tracked values on each bar—keeping the maximum high, minimum low, and updating the close. For NY, I only capture the open on the first bar of the session.
+
+The momentum calculations compute the range and directional movement for each session by taking the difference between close and open prices. I then derive bias signals by comparing momentum to zero.
+
+To identify London breaking out of the Asian range, I check if the London high exceeds the Asian high or if the London low drops below the Asian low. These conditions validate that London has successfully penetrated the prior range boundaries.
+
+For the confidence scoring system, I need to track when the NY session begins to recalculate the score from scratch. This happens when we're currently in NY hours but weren't in the previous bar. Once detected, I reset the confidence to zero and begin accumulating points based on momentum alignment—if both Asian and London show the same directional bias, that's worth 40 points in that direction. Additional points come from London breaking through Asian resistance levels, with further adjustments for momentum strength and continuation patterns. (asian_bias.iloc[i] > 0):
+        score -= 15
+    
+    confidence_score.iloc[i] = score
+    
+    if score > 30:
+        current_bias.iloc[i] = 1
+    elif score < -30:
+        current_bias.iloc[i] = -1
+    else:
+        current_bias.iloc[i] = 0
+
+I need to ensure the bias persists across bars within the same session. The `confidence_score` is calculated at the session start, but `current_bias` needs to carry forward through all bars in that session. When the next NY session begins, `confidence_score` resets while `current_bias` should continue from its previous value until recalculated.
+
+For FVG detection, I check if the current low exceeds the high from two bars back (bullish FVG) or if the current high falls below the low from two bars back (bearish FVG), which identifies imbalances in the market structure.
+
+To track FVG sequences, I maintain a `last_fvg` variable that records whether the most recent FVG was bullish (1) or bearish (-1). When a bullish FVG appears after a bearish one, it signals a sharp upward turn, and conversely for bearish after bullish. The tracking initializes at 0 and updates as each FVG is detected.
+
+For entry signals, I need to check that we're within the trading window and NY session simultaneously, then filter for sharp turns that align with the current bias direction—bullish entries require a positive bias, bearish entries require negative.
+
+To implement this in Python, I'm building session detection flags by comparing the hour component of each timestamp against the defined window boundaries. For the Asian session spanning midnight to 9 AM UTC, I identify bars falling within that hour range.

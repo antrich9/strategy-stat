@@ -1,0 +1,30 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    # Ensure chronological order
+    df = df.sort_values('time').reset_index(drop=True)
+
+    # Compute EMAs ( Pine ta.ema(src, len) => src.ewm(span=len, adjust=False).mean() )
+    df['ema_fast'] = df['close'].ewm(span=50, adjust=False).mean()
+    df['ema_slow'] = df['close'].ewm(span=200, adjust=False).mean()
+
+    # Previous day high/low (request.security on 'D')
+    df['datetime'] = pd.to_datetime(df['time'], unit='s', utc=True)
+    df['date'] = df['datetime'].dt.date
+    daily = df.groupby('date').agg(day_high=('high', 'max'), day_low=('low', 'min')).reset_index()
+    daily['prev_day_high'] = daily['day_high'].shift(1)
+    daily['prev_day_low'] = daily['day_low'].shift(1)
+    df = df.merge(daily[['date', 'prev_day_high',

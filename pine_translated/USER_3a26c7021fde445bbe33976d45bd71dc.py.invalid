@@ -1,0 +1,399 @@
+Let me analyze the Pine Script to extract the entry logic.
+
+The key entry conditions are based on:
+1. `basicLongCondition_TTMS` = `redGreen_TTMS ? TTMS_Signals_TTMS == 1 : TTMS_Signals_TTMS > 0`
+2. `basicShortCondition_TTMS` = `redGreen_TTMS ? TTMS_Signals_TTMS == -1 : TTMS_Signals_TTMS < 0`
+
+The entries happen in:
+if (strategy.position_size == 0)
+    if (long_condition)
+        strategy.entry("Long", strategy.long, qty=positionSize)
+    if (short_condition)
+        strategy.entry("Short", strategy.short, qty=positionSize)
+
+So the entry conditions are:
+- Long: `basicLongCondition_TTMS`
+- Short: `basicShortCondition_TTMS`
+
+Where:
+- `TTMS_Signals_TTMS = mom_TTMS > 0 ? iff_1_TTMS_no : iff_2_TTMS_no`
+- `iff_1_TTMS_no = mom_TTMS > nz(mom_TTMS[1]) ? 1 : 2`
+- `iff_2_TTMS_no = mom_TTMS < nz(mom_TTMS[1]) ? -1 : -2`
+
+So:
+- When `mom_TTMS > 0`: `TTMS_Signals_TTMS = (mom_TTMS > nz(mom_TTMS[1]) ? 1 : 2)` = 1 if rising, 2 if falling but positive
+- When `mom_TTMS <= 0`: `TTMS_Signals_TTMS = (mom_TTMS < nz(mom_TTMS[1]) ? -1 : -2)` = -1 if falling, -2 if rising but negative
+
+
+- `basicLongCondition_TTMS` activates when redGreen_TTMS is true and mom_TTMS > 0 with positive momentum, or when false and momentum is simply positive. `basicShortCondition_TTMS` follows the inverse logic, triggering on negative momentum conditions.
+
+The final signal combines these with squeeze filtering—if highlightMovements_TTMS is enabled, only NoSqz_TTMS (squeeze off) passes through; otherwise the base condition applies directly. Then cross confirmation adds another layer: if enabled, the signal requires the base condition to be true at the current bar while absent at the previous bar, creating a crossover effect rather than just a state check. The logic simplifies significantly because `highlightMovements_TTMS` defaults to true, which means `NoSqz_TTMS` must be true for long entries. For short entries, `basicShortCondition_TTMS` evaluates to true when `TTMS_Signals_TTMS` is negative, which occurs when momentum is below zero. The short entry also requires `NoSqz_TTMS` to be true as part of the `TTMS_SignalsShort_TTMS` condition.
+
+The `TTMS_SignalsLongFinal_TTMS` indicator determines the final entry signal based on the `use_TTMS` toggle. When `use_TTMS` is true and `inverse_TTMS` is false, it uses the cross confirmation version; when `inverse_TTMS` is true, it inverts to use the short cross signal instead. The script plots these final signals and sets background colors accordingly—green for long entries and red for short entries. Since the entry conditions are always true (use_TTMS and inverse_TTMS are both true by default), the actual signal is simply basicLongCondition_TTMS with NoSqz_TTMS as the squeeze filter for longs. When momentum is declining but still positive, the value is 2. For negative momentum readings, the first condition evaluates whether momentum is more negative than the previous value—if so, the output is -1 (aqua color), otherwise -2 (blue). When momentum is positive and rising, the calculation returns 1 (aqua color), and when positive but falling, it returns 2 (blue).
+
+The color assignment works by checking the sign of momentum first: if it's positive, use the first color pair; if negative, use the second pair. This creates a visual distinction between bullish and bearish momentum states.
+
+When `redGreen_TTMS` is enabled, positive momentum values trigger long trades (when `TTMS_Signals_TTMS == 1`), while negative values trigger short trades (when `TTMS_Signals_TTMS == -1`). The condition `TTMS_Signals_TTMS > 0` captures all bullish momentum states, including both rising and falling positive values.
+
+The strategy enters long positions when momentum is positive and no squeeze is occurring, while short positions require negative momentum under the same squeeze-free conditions.
+
+The crossover logic identifies new long signals by checking if a long condition wasn't present in the previous bar but is now active, with the same approach applied to short signals.
+
+Since `use_TTMS` is enabled by default, the final conditions either apply the cross confirmation when `inverse_TTMS` is false, or flip to the opposite direction when `inverse_TTMS` is true. Both booleans default to true, so cross confirmation gets applied and the direction isn't inverted.
+
+When `cross_TTMS` is true, `TTMS_SignalsLongCross_TTMS` checks if the current bar satisfies the long signal condition while the previous bar didn't. For short signals, `TTMS_SignalsShortCross_TTMS` does the same check for short conditions.
+
+The final signal for longs is `TTMS_SignalsLongCross_TTMS` since inverse mode is disabled, and similarly for shorts. This means entries trigger only when a new signal appears in the direction we want, avoiding consecutive bars of the same signal. Both long and short entries are included in the strategy. NoSqz_TTMS requires either BB_lower below KC_lower_low or BB_upper above KC_upper_low, while the squeeze conditions (LowSqz, MidSqz, HighSqz) activate when BB_lower meets or exceeds KC_lower_low and BB_upper meets or falls below KC_upper_low at different thresholds. For the momentum calculation, I'm computing the linear regression of the price deviation from the average of the highest high, lowest low, and SMA of close over the lookback period. The squeeze indicator only fires when both BB bands simultaneously breach their corresponding KC channels—lower band below the low KC channel AND upper band above the high KC channel. This means the squeeze state requires coordination across both bands rather than just one side breaching.
+
+For the Python implementation, I need to calculate the squeeze condition using the band positions, compute the momentum oscillator via linear regression on price deviations, derive the signal values based on momentum direction and changes, and then combine these with the crossconfirm flag to produce final long and short signals. The entry logic then applies these final signals to determine when positions should be initiated.
+
+One thing to account for is the `nz(mom_TTMS[1])` function in Pine Script—it replaces NaN values with 0 on the previous bar. Since I can't look ahead in the data, I'll need to handle the initial bars carefully to avoid using future information.
+
+Looking at the momentum calculation more carefully, the linear regression is computed over the `length_TTMS` period. For the first `length_TTMS - 1` bars, the series will have NaN values since there's not enough data to compute a full regression. This means `nz(mom_TTMS[1])` will only be 0 for the very first bar, and after that, the momentum values should exist.
+
+I should skip the first bar (where `mom_TTMS[1]` is undefined) and start from `length_TTMS` where the momentum series actually has values.
+
+For the implementation, I'll need to handle the Wilder RSI smoothing for the ATR calculation since Pine Script uses that method by default, along with the linear regression for momentum and the other technical indicators.
+
+Now I'm working through the squeeze condition logic. The code checks if the lower Bollinger band is below the lower Keltner channel OR the upper band is above the upper channel—this defines when there's no squeeze occurring. The condition is inverted from what might be expected since it's written to capture the absence of compression rather than its presence.
+
+For the momentum calculation, I'm using a linear regression approach that subtracts the average of the highest high, lowest low, and simple moving average of close from the current close, then applying the regression over the specified length. In Python, this translates to computing the highest high and lowest low over the window, calculating the SMA of close, then applying pandas' rolling linear regression or a manual calculation to get the momentum values.
+
+The linear regression implementation needs to handle the rolling window properly—for each bar, it calculates the regression coefficients over the specified period to determine the slope and intercept of the price movement. The linear regression formula uses the standard approach with x values ranging from 0 to n-1, calculating the slope and intercept based on the price series. For the indicator values, when mom_TTMS equals the previous value (no change), the output becomes 2, which is still treated as positive in the condition logic. Now I can write out the complete Python implementation.
+
+The function needs to return a list of dictionaries containing trade information: trade number, direction, entry/exit timestamps and prices, plus the raw price values. For each bar, I'll generate a trade entry whenever a long or short condition is met, storing the timestamp, price, and trade direction. Since I'm only handling entry logic here, all exit fields remain empty. I should also make sure the dataframe index uses integer-based positioning rather than datetime-based indexing to properly track bar positions. I need to ensure there's enough historical data before calculating the linear regression. For the first `length_TTMS` bars, `mom` will be NaN since the rolling window can't be fully populated, so I'll need to skip those initial bars or handle them appropriately. This aligns with Pine Script's behavior where `mom_TTMS` would also be undefined during that period.
+
+Now I'll implement the full function, checking that the dataframe has sufficient rows before proceeding with calculations. I'll iterate through the data starting from index `length_TTMS` to avoid NaN values in the momentum calculation. For each bar, I'll compute the squeeze conditions and momentum signal, then evaluate the long and short entry signals based on the cross confirmation and inverse settings.
+
+When both long and short signals fire simultaneously—which can occur when momentum is zero or when inverse mode reverses the direction—I need to choose one. Looking at the logic, when momentum is positive and rising, both conditions could be true, but the standard interpretation would prioritize the primary direction based on the current momentum state rather than allowing concurrent entries. =2, not > 0
+
+If crossconfirm:
+- CrossLong: mom[1] <= 0 or cross_long_signal was false at i-1, and now mom[i] > 0 with rising momentum, plus NoSqz
+- CrossShort: mom[1] >= 0 or cross_short_signal was false at i-1, and now mom[i] < 0 with falling momentum, plus NoSqz
+
+When mom[i] > 0 (positive momentum), CrossLong can fire if momentum is rising and NoSqz is true. CrossShort won't trigger at the same time since mom[i] < 0 is false. The same logic applies in reverse when mom[i] < 0—CrossShort fires while CrossLong doesn't.
+
+There are edge cases to consider: when momentum equals zero, both conditions fail regardless of crossover status. If momentum was positive at i-1 and becomes zero at i, the crossconfirm logic checks whether the prior momentum state supports a crossover signal.
+
+The key insight is that the crossconfirm condition only triggers on the transition itself. Once momentum stabilizes at a non-zero level, the crossover requirement prevents consecutive entries. So even if momentum stays positive or negative for multiple bars, only the initial transition produces a signal.
+
+For edge cases like when momentum switches from positive to negative, both crossconfirm checks could theoretically fire in the same bar, creating competing signals. The script prioritizes long entries when both conditions are met, which provides a deterministic resolution strategy. bars, so we use the previous bar's value. When there's insufficient data, Pine returns 0 instead of NaN. For bar 1, both current and previous momentum are undefined, so nz() converts them to 0—this means the rising condition fails since 0 isn't greater than 0. When momentum exists in the previous bar but becomes NaN at the current bar (which can occur if the calculation fails due to insufficient data), nz() treats the NaN as 0, allowing the logic to continue working even when data is missing. For index 0, both current and previous momentum values are NaN, so the `>` comparison yields False. Starting from index 1, I can check if momentum rises relative to the prior bar. For positions where momentum exists, `rising[i] = mom[i] > mom[i-1]`. I also need to handle cases where the previous momentum is NaN—in those situations, I'll treat it as zero for the comparison.
+
+When `mom[i]` is valid, `rising[i]` becomes True only if `mom[i] > max(mom[i-1], 0)` since NaN gets replaced with zero. This ensures the comparison properly evaluates momentum increases against either the previous value or zero, whichever is greater.
+
+To implement this, I can use `mom.shift(1).fillna(0)` to get the previous momentum with NaNs replaced, then compare against zero. I'll also use `.fillna(False)` on the boolean series to handle any edge cases.
+
+prev_mom = mom.shift(1).fillna(0)
+rising = (mom > prev_mom) & (mom > 0)
+falling = (mom < prev_mom) & (mom < 0)
+
+For the NoSqz calculation, I need to verify the squeeze logic. The condition checks if the lower Bollinger band is below the lower Keltner channel OR if the upper Bollinger band is above the upper Keltner channel—this indicates no squeeze when either the bottom is loose or the top is loose.
+
+In Python, this translates to:
+NoSqz = (BB_lower < KC_lower_low) | (BB_upper > KC_upper_low)
+
+The other squeeze levels (Low, Mid, High) are when both bands are compressed within their respective Keltner channels, which I won't need for the entry logic. I also need to be careful with `.iloc[i-1]` when accessing the previous bar, since at i=0 this would cause an index error—I should start from index 1 to avoid this. - `mom.iloc[i] > 0` captures all positive momentum, with rising momentum indicated by 1 and falling by 2
+- `mom.iloc[i] < 0` captures all negative momentum, with falling momentum indicated by -1 and rising by -2
+
+For the cross confirmation logic, I need to evaluate the previous bar's momentum state to detect directional changes. The previous bar's momentum determines whether we're transitioning into or out of momentum zones.
+
+When checking long crosses, I verify if the previous bar had non-positive momentum (either zero or negative) and the current bar shows positive momentum. Similarly for short crosses, I check if the previous momentum was non-negative and the current momentum is negative. This captures momentum shifts that signal potential entry points.
+
+Let me reconsider the logic more carefully. When rising is True, the condition `not (mom[i-1] > 0 and rising[i-1])` evaluates to True only if the previous bar wasn't a rising positive momentum case. So at i=1 with mom[1]=5 and rising[1]=True, the previous bar's conditions matter—since mom[0] isn't greater than 0, the long cross triggers. At i=2 with mom[2]=8 and rising[2]=True, the previous bar's positive momentum means the cross doesn't trigger, preventing redundant signals in consecutive rising bars.
+
+The short cross follows the same logic in reverse, checking for moments where momentum shifts downward. Now I need to combine these conditions with NoSqz and apply any cross confirmation or inverse filters to finalize the long and short signals.
+
+However, I'm realizing the previous momentum values might be NaN in the early bars. When accessing mom[i-1] directly with .iloc, NaN values could propagate through the comparisons. For instance, when mom[i-1] is NaN, the condition `mom[i-1] > 0` returns False, and `mom[i-1] <= 0` also returns False since NaN comparisons are always false. This means the cross detection logic might not work correctly for the initial bars where momentum data is missing.
+
+To handle this properly, I should use .fillna(0) on the previous momentum values, which aligns with how Pine Script's nz() function treats missing values. Alternatively, I can use .shift(1).fillna(0) to replace NaN with zero across the entire series, ensuring consistent behavior in the comparison logic.
+
+When computing `rising`, I'm already filling NaN values with zero before comparing. For the cross detection, I need to apply the same approach—checking if the current momentum is positive while the previous momentum was either NaN or non-positive. This means using `.iloc[i-1]` to access the previous value, but ensuring NaN comparisons work correctly by filling those missing values with zero as well. For bars 2 onwards, `mom.iloc[i-1]` directly accesses the previous value, which is valid. At bar 0, accessing `mom.iloc[-1]` wraps around and retrieves the last value, but this gives us `mom[-1]` instead of the intended previous momentum. I need to explicitly check if `i > 0` before using `.iloc[i-1]`, otherwise I'll get incorrect behavior for the first bar. Alternatively, I could skip bar 0 entirely to avoid this indexing issue, since momentum values are typically NaN there anyway.
+
+I'll iterate from index 1 onwards, using `.iloc[i-1]` to safely access the previous momentum value. This means `prev_mom = mom.iloc[i-1]` will correctly retrieve the prior bar's momentum for each iteration.
+
+For bars where momentum data exists, `mom.iloc[i-1]` will hold the actual previous value. When `mom.iloc[i]` is NaN, I can skip that iteration entirely since there's insufficient data to compute the indicator. For valid bars, the comparison `mom.iloc[i-1] <= 0` will properly evaluate—whether the previous momentum was zero, negative, or undefined, the logic handles all cases correctly.
+
+Now I can structure the function: validate the dataframe has enough rows, set the parameters, calculate the squeeze indicator, and build the momentum series through the loop.
+
+For the momentum calculation, I need to shift the high and low series by one period to align with the current close price in the linear regression formula. The highest high and lowest low use a rolling window equal to the TTM length parameter.
+
+To compute the linear regression, I'm using a rolling window over the same period. For each window of price deviations, I calculate the sum of x values (0 through n-1), sum of y values (the deviations), sum of x squared, and sum of x times y. Then I apply the standard OLS formulas to derive the slope and intercept for that window. i] - y_mean) * (i - x_mean)
+    ssxy = ((x - x_mean) * (y - y_mean)).sum()
+    slope = ssxy / ssx
+    return slope
+
+I can simplify this using pandas built-ins. The rolling covariance between x and y divided by the rolling variance of x gives the slope directly:
+
+mom = ((price_deviation - price_deviation.rolling(length).mean()) * 
+       (np.arange(length) - (length-1)/2)).rolling(length).sum() / ssx
+
+Or I could use a loop to accumulate the products and means at each position, building up the covariance estimate incrementally. I'm overcomplicating this. Let me just use a straightforward loop to compute the linear regression slope:
+
+mom = pd.Series(index=df.index, dtype=float)
+x = np.arange(length)
+
+for i in range(length - 1, n):
+    window = price_deviation.iloc[i-length+1:i+1]
+    slope = np.polyfit(x, window, 1)[0]
+    mom.iloc[i] = slope
+
+This should work fine for the 20-bar length. For the momentum indicator, I need to calculate it starting from index 20 onwards where there's enough data. When computing `rising`, the first value will be NaN since there's no previous momentum to compare against, but that's expected.
+
+The cross confirmation logic checks if the momentum crossed above zero on this bar while the previous bar was at or below zero. The `rising` indicator flags when momentum is increasing, which helps identify the strength of the crossover.
+
+I need to reconsider the default parameters. Both `use_TTMS` and `inverse_TTMS` default to True, which means the strategy will apply the heartbeat logic and inverse mode. With `use_TTMS=True`, the conditional logic kicks in, and `inverse_TTMS=True` flips the direction, so Short signals are derived from Long conditions rather than Short ones. Since `use_TTMS=True` and `inverse_TTMS=True`, the short signal uses inverted long signals. I need to verify what happens when both conditions trigger simultaneously. Looking at the long and short signal definitions, they depend on the cross confirmation flag, momentum direction, and whether we're in inverse mode. Since the defaults have cross confirmation enabled, this affects when entries actually fire. The question is whether the script can generate both a long and short signal at the same bar when momentum crosses zero, or if one takes precedence. The long condition triggers when momentum exceeds zero, while the short requires momentum below zero with a downward turn—both conditions can occur at the same bar when momentum transitions through zero, creating conflicting signals. However, the cross-confirmation logic should prevent this overlap by checking previous bar momentum values, ensuring only one direction fires per bar.
+
+When momentum is positive and rising, the previous bar's momentum was non-positive, so the cross-confirmation validates the long signal while the short signal remains suppressed. The reverse occurs when momentum is negative and falling. Edge cases like zero momentum don't trigger either signal since they fail the directional and momentum change requirements.
+
+The inverse setting inverts the long signal to use the short condition instead. Both long and short signals can fire simultaneously only when momentum sits exactly at zero and the cross-confirmation conditions align—but this requires a specific state where the previous momentum was positive while the current momentum is zero, creating a rare scenario where both conditions could theoretically trigger. mom[i-1] = 0 (prev not positive)
+- rising[i] = mom[i] > 0 and mom[i] > mom[i-1] = 0 > 0 and 0 > 0 = False
+- cross_long[i] = False
+
+Short:
+- mom[i] < 0 = False (current not negative)
+- cross_short[i] = False
+
+Both False.
+
+Edge case 4: mom[i-1] = 0, mom[i] > 0, rising[i] = True (mom went from 0 to positive and rising)
+- Long: mom[i] > 0 = True, cross_long = not (0 > 0 and rising[i-1]) = not False = True
+- Short: mom[i] < 0 = False, cross_short = False
+
+Only long fires. Edge case 5: mom[i-1] > 0 (positive), mom[i] = 0 (not positive, not negative), rising[i] = False, falling[i] = False
+- Long: mom[i] > 0 = False, cross_long = False
+- Short: mom[i] < 0 = False, cross_short = False
+
+Both False. Edge case 6: mom[i-1] > 0 and rising (positive and rising), mom[i] drops to 0
+- Long: mom[i] > 0 = False, cross_long = False
+- Short: mom[i] < 0 = False, cross_short = False
+
+Both False.
+
+Edge case 7: mom[i-1] < 0 (negative), mom[i] = 0 (not positive, not negative), falling[i] = False
+- Long: mom[i] > 0 = False, cross_short = False
+- Short: mom[i] < 0 = False, cross_short = False
+
+Both False.
+
+Edge case 8: mom[i-1] < 0 and falling (negative and falling), mom[i] rises to 0
+- Long: mom[i] > 0 = False, cross_long = False
+- Short: mom[i] < 0 = False, cross_short = False
+
+Both False. Conclusion: cross_long and cross_short cannot both be True at the same bar. At most one direction fires per bar.
+
+So I can safely check long and short signals without conflict. For the inverse logic, when use_TTMS=True and inverse_TTMS=True, the long final signal becomes TTMS_SignalsShortCross_TTMS, meaning I'm using short conditions for the long direction. The short final signal uses TTMS_SignalsLongCross_TTMS instead. This flips the logic—long entries now require short conditions (negative momentum with falling), while short entries use long conditions (positive momentum with rising). cross_long = True (mom > 0, rising, crossconfirm)
+- TTMS_SignalsShortFinal_TTMS = cross_short (mom < 0, falling, crossconfirm)
+
+Without inverse, short entries rely on falling momentum. With inverse enabled, long entries flip to short conditions and short entries flip to long conditions. The logic handles both scenarios correctly.
+
+Since the strategy includes both directions, I need to emit both. Here's the implementation:
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    
+    n = len(df)
+    length = 20
+    cross_confirm = True
+    
+    if n < length:
+        return []
+    
+    close = df['close']
+    high = df['high']
+    low = df['low']
+    
+    # Bollinger Bands (length=20)
+    BB_basis = close.rolling(length).mean()
+    dev = close.rolling(length).std()
+    BB_upper = BB_basis + 2.0 * dev
+    BB_lower = BB_basis - 2.0 * dev
+    
+    # Keltner Channels (length=20)
+    KC_basis = close.rolling(length).mean()
+    devKC = close.rolling(length).mean()
+    KC_upper_low = KC_basis + devKC * 2.0
+    KC_lower_low = KC_basis - devKC * 2.0
+    
+    # No squeeze condition: either band breaks outside Keltner
+    NoSqz = (BB_lower < KC_lower_low) | (BB_upper > KC_upper_low)
+    
+    # Linear Regression for momentum
+
+I need to compute the momentum indicator using linear regression on price deviations. The highest high and lowest low over the lookback period, combined with the moving average of close, form the baseline for calculating deviations from the mean price action.
+
+    highest = high.rolling(length).max()
+    lowest = low.rolling(length).min()
+    sma_close = close.rolling(length).mean()
+    avg = (highest + lowest + sma_close) / 3.0
+    price_deviation = close - avg
+    
+    # Calculate linear regression slope for each bar
+    mom = pd.Series(np.nan, index=df.index)
+    x = np.arange(length)
+    
+    for i in range(length - 1, n):
+        window = price_deviation.iloc[i - length + 1:i + 1]
+        mom.iloc[i] = np.polyfit(x, window, 1)[0]
+    
+    rising = pd.Series(False, index=df.index)
+    for i in range(1, n):
+        if pd.isna(mom.iloc[i]) or pd.isna(mom.iloc[i-1]):
+            rising.iloc[i] = False
+        else:
+            rising.iloc[i] = (mom.iloc[i] > 0) and (mom.iloc[i] > mom.iloc[i-1])
+
+Now I need to compute the cross signal by checking if momentum crosses above zero while accounting for the previous bar's momentum state.
+
+    cross_long = pd.Series(False, index=df.index)
+    cross_short = pd.Series(False, index=df.index)
+    
+    for i in range(1, n):
+        if pd.isna(mom.iloc[i]):
+            continue
+        prev_mom = mom.iloc[i-1] if not pd.isna(mom.iloc[i-1]) else 0
+        
+        long_cond = (mom.iloc[i] > 0) and not (prev_mom > 0 and (not pd.isna(mom.iloc[i-1]) and rising.iloc[i-1]))
+        cross_long.iloc[i] = long_cond
+        
+        short_cond = (mom.iloc[i] < 0) and not (prev_mom < 0 and (not pd.isna(mom.iloc[i-1]) and (mom.iloc[i] < mom.iloc[i-1] and mom.iloc[i-1] < 0)))
+        cross_short.iloc[i] = short_cond
+
+I should also consider what happens at bar 0. Since `mom[0]` would be NaN with only one data point, the loop starting from `length - 1` ensures I only process bars with sufficient history. The cross_long condition needs to check that momentum is positive and wasn't already positive in the previous bar. cross_long condition: mom[i] > 0 AND NOT(prev_mom > 0 AND rising[i-1])
+
+When prev_mom is NaN, the comparison `NaN > 0` evaluates to False, so the AND expression fails and cross_long becomes True as long as mom[i] > 0. This aligns with Pine Script's behavior where nz(prev_mom) = 0.
+
+For the rising check at i-1, if mom[i-1] is NaN, rising[i-1] stays False, making prev_mom > 0 AND rising[i-1] evaluate to False. The edge case where mom[i-1] = 0 with rising[i-1] = True doesn't occur since rising would be False when mom equals 0.
+
+I can simplify by using mom.shift(1).fillna(0) to handle NaN values cleanly. For the rising signal, I need to check if mom[i] > prev_mom and mom[i] > 0, which translates to `rising = (mom > mom.shift(1).fillna(0)) & (mom > 0)`. When mom[i] is positive and rising, cross_long activates. For cross_short, I need mom[i] < 0 combined with the condition that the previous bar wasn't also negative and falling. 0 and mom[i-1] >= 0 OR mom[i-1] was NaN
+
+This aligns with the logic: the momentum direction must have shifted from non-falling to falling. I can implement this with boolean conditions checking the current and previous momentum states, ensuring the transition from non-negative to negative is captured.
+
+For the inverse parameter, when it's enabled, the long and short signals get swapped—long entries use the short condition while short entries use the long condition. This allows for inverse trading strategies where the direction is reversed based on the same momentum indicators.
+
+When both use_TTMS and inverse are false, the strategy doesn't apply any filtering and all momentum shifts become valid entry signals regardless of direction.
+
+The final signals combine the base conditions with the squeeze filter: long entries require both a positive momentum cross and the absence of a squeeze, while short entries need a negative momentum cross with no squeeze. These signals are then refined based on whether the heartbeat logic is enabled and the inverse setting.
+
+Now I'm setting up the iteration logic to process entries. The function will track trade numbers starting at 1, then iterate through the dataframe checking for long and short signal conditions. When a signal fires, I'll record the timestamp and calculate the entry price based on the closing price at that bar, along with placeholder values for exit parameters and raw price data.
+
+I need to be careful about how I'm accessing previous bar values. While `.iloc[i-1]` works for scalar comparisons within the loop, the vectorized `rising` Series has already been computed across the entire dataset, so I can reference `rising.iloc[i-1]` directly without worrying about index bounds. For the scalar `mom.iloc[i-1]` check, I should also handle the case where `i == 0` to avoid index errors.
+
+Let me verify the implementation handles all the edge cases: NaN values in momentum will skip those bars, the first bar won't trigger entries since `rising.iloc[0]` defaults to False, and momentum bars before the required lookback period will naturally be excluded from consideration.
+
+Now checking the entry conditions for short positions when inverse mode is enabled. The logic validates that short entries trigger when momentum crosses below zero with downward movement, both conditions must be true. Looking at the signal composition, `TTMS_SignalsShortFinal_TTMS` combines the cross confirmation logic with the NoSqz filter, which mirrors how long entries are structured but inverts the direction. The inverse mode effectively swaps the long and short signal sources, so when enabled, long entries pull from the short cross signal and short entries pull from the long cross signal. The logic checks out. Short_TTMS = NoSqz and Short conditions are met
+
+TTMS_SignalsLongFinal_TTMS = True → CrossLong_TTMS = True
+TTMS_SignalsShortFinal_TTMS = True → CrossShort_TTMS = True
+
+Both entries fire when inverse is active. Since cross_long and cross_short can't both trigger simultaneously (mom can't be both positive and negative), I'll get one long and one short entry at the same bar when this happens.
+
+I need to emit both entries but label them clearly by direction. For timing, I should convert the timestamp to UTC in ISO format. I also need to handle NaN values in the momentum calculation by skipping those bars and replacing them with zeros for comparison logic. For short entries when inverse is enabled, I need to verify the same logic applies: `basicShortCondition_TTMS` evaluates to true when mom is negative and rising (a -2 value), which triggers an entry signal under the NoSqz condition. This confirms the inverse behavior works symmetrically for both directions.
+
+Now I'll write out the complete function to implement these entry conditions.
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    
+    n = len(df)
+    length = 20
+    cross_confirm = True
+    use_ttis = True
+    inverse = True
+    red_green = True
+    highlight_movements = True
+    
+    if n < length:
+        return []
+    
+    close = df['close']
+    high = df['high']
+    low = df['low']
+    
+    # Bollinger Bands (length=20)
+    BB_basis = close.rolling(length).mean()
+    dev = close.rolling(length).std()
+    BB_upper = BB_basis + 2.0 * dev
+    BB_lower = BB_basis - 2.0 * dev
+    
+    # Keltner Channels (length=20)
+    KC_basis = close.rolling(length).mean()
+    dev_kc = close.rolling(length).mean()
+    KC_upper_low = KC_basis + dev_kc * 2.0
+    KC_lower_low = KC_basis - dev_kc * 2.0
+    
+    # No squeeze condition
+    NoSqz = (BB_lower < KC_lower_low) | (BB_upper > KC_upper_low)
+    
+    # Linear Regression for momentum
+    highest = high.rolling(length).max()
+    lowest = low.rolling(length).min()
+    sma_close = close.rolling(length).mean()
+    avg = (highest + lowest + sma_close) / 3.0
+    price_deviation = close - avg
+    
+    # Calculate linear regression slope for each bar
+    mom = pd.Series(np.nan, index=df.index)
+    x = np.arange(length)
+    
+    for i in range(length - 1, n):
+        window = price_deviation.iloc[i - length + 1:i + 1]
+        mom.iloc[i] = np.polyfit(x, window, 1)[0]
+    
+    # Rising momentum
+    prev_mom = mom.shift(1).fillna(0)
+    rising = (mom > prev_mom) & (mom > 0)
+    
+    # Cross signals
+    cross_long = pd.Series(False, index=df.index)
+    cross_short = pd.Series(False, index=df.index)
+    
+    for i in range(1, n):
+        if pd.isna(mom.iloc[i]):
+            continue
+        # Long cross: mom just turned positive and rising
+        cross_long.iloc[i] = (mom.iloc[i] > 0) and not (prev_mom.iloc[i] > 0 and rising.iloc[i-1])
+        # Short cross: mom just turned negative and falling
+        cross_short.iloc[i] = (mom.iloc[i] < 0) and not (prev_mom.iloc[i] < 0 and (mom.iloc[i] < mom.iloc[i-1]))
+    
+    # Final signals with inverse
+    if use_ttis and inverse:
+        long_signal = cross_short & NoSqz
+        short_signal = cross_long & NoSqz
+    else:
+        long_signal = cross_long & NoSqz
+        short_signal = cross_short & NoSqz
+    
+    # Generate entries
+    entries = []
+    trade_num = 1
+    
+    for i in range(1, n):
+        if pd.isna(mom.iloc

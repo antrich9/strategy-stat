@@ -1,0 +1,79 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    # Constants matching input defaults
+    useE2PSS = True
+    inverseE2PSS = False
+    PeriodE2PSS = 15
+
+    trendilo_smooth = 1
+    trendilo_length = 50
+    trendilo_offset = 0.85
+    trendilo_sigma = 6
+    trendilo_bmult = 1.0
+
+    length_TTMS = 20
+    BB_mult_TTMS = 2.0
+    KC_mult_high_TTMS = 1.0
+    KC_mult_mid_TTMS = 1.5
+    KC_mult_low_TTMS = 2.0
+
+    use_TTMS = True
+    redGreen_TTMS = True
+    cross_TTMS = True
+    inverse_TTMS = False
+    highlightMovements_TTMS = True
+
+    # HTF filter assumed True (no HTF data available in df)
+    htf_bull = pd.Series(True, index=df.index)
+    htf_bear = pd.Series(True, index=df.index)
+
+    # Price series
+    hl2 = (df['high'] + df['low']) / 2
+    close = df['close']
+
+    # --- E2PSS Filter ---
+    pi = 2 * np.arcsin(1)
+    a1 = np.exp(-1.414 * pi / PeriodE2PSS)
+    b1 = 2 * a1 * np.cos(1.414 * pi / PeriodE2PSS)
+    coef2 = b1
+    coef3 = -a1 * a1
+    coef1 = 1 - coef2 - coef3
+
+    Filt2 = np.zeros(len(df))
+    max_init = min(3, len(df))
+    for i in range(max_init):
+        Filt2[i] = hl2.iloc[i]
+    for i in range(3, len(df)):
+        Filt2[i] = coef1 * hl2.iloc[i] + coef2 * Filt2[i-1] + coef3 * Filt2[i-2]
+    Filt2 = pd.Series(Filt2, index=df.index)
+    TriggerE2PSS = Filt2.shift(1)
+
+    signalLongE2PSS = Filt2 > TriggerE2PSS
+    signalShortE2PSS = Filt2 < TriggerE2PSS
+
+    signalLongE2PSSFinal = signalShortE2PSS if inverseE2PSS else signalLongE2PSS
+    signalShortE2PSSFinal = signalLongE2PSS if inverseE2PSS else signalShortE2PSS
+
+    # --- Trendilo ---
+    pct_change = close.diff(trendilo_smooth) / close * 100
+
+    # ALMA implementation
+    def alma(src, length, offset, sigma):
+        m = offset * (length - 1)
+        s = sigma * (length - 1) / 2
+        if s == 0:
+            w = np.ones(length)
+        else:
+            k = np.arange(length)
+            w = np.exp(-((k - m) ** 2) / (2 * s ** 2))
+        result = np.full(len(src), np.nan)
+        for i in range(length - 1, len(src)):
+            window = src.iloc[i-length+1:i+1].values
+            result[i] = np.sum(window * w) / np.sum(w)
+        return pd.Series(result, index=src.index)
+
+    avg_pct_change = alma(pct_change, trendilo_length, trendilo_offset, trendilo_sigma)
+    rms = trendilo_bmult * np.sqrt((avg_pct_change ** 2).

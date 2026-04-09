@@ -1,0 +1,5 @@
+[{'trade_num': int, 'direction': 'long' or 'short',
+     'entry_ts': int, 'entry_time': str,
+     'entry_price_guess': float,
+     'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+     'raw_price_a': float, 'raw_price_b': float}]

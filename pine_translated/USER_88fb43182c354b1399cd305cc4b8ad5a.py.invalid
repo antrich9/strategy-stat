@@ -1,0 +1,49 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    # Parameters (using input defaults from Pine Script)
+    t3_fast_length = 12
+    t3_slow_length = 25
+    t3_factor = 0.7
+    adx_length = 14
+    di_length = 14
+    adx_threshold = 25.0
+    bb_length = 20
+    bb_mult = 2.0
+    keltner_length = 20
+    keltner_mult = 1.5
+    trade_style = "Balanced"
+    entry_filter = 3
+
+    close = df['close']
+    high = df['high']
+    low = df['low']
+
+    # T3 Calculation
+    def t3_calc(src, length, factor):
+        ema1 = src.ewm(span=length, adjust=False).mean()
+        ema2 = ema1.ewm(span=length, adjust=False).mean()
+        ema3 = ema2.ewm(span=length, adjust=False).mean()
+        ema4 = ema3.ewm(span=length, adjust=False).mean()
+        ema5 = ema4.ewm(span=length, adjust=False).mean()
+        ema6 = ema5.ewm(span=length, adjust=False).mean()
+        c1 = -factor ** 3
+        c2 = 3 * factor ** 2 + 3 * factor ** 3
+        c3 = -6 * factor ** 2 - 3 * factor - 3 * factor ** 3
+        c4 = 1 + 3 * factor + factor ** 3 + 3 * factor ** 2
+        return c1 * ema6 + c2 * ema5 + c3 * ema4 + c4 * ema3
+
+    def wilders_ma(

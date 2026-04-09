@@ -1,0 +1,4 @@
+tr = np.maximum(df['high'] - df['low'],
+                np.maximum(abs(df['high'] - df['close'].shift(1)),
+                           abs(df['low'] - df['close'].shift(1))))
+atr = tr.ewm(alpha=1/previousBarsCount, adjust=False).mean()

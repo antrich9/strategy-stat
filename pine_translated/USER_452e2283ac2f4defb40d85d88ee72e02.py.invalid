@@ -1,0 +1,309 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def ta_rsi(src, length):
+    delta = src.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = (-delta).where(delta < 0, 0.0)
+    avg_gain = gain.ewm(alpha=1/length, min_periods=length, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/length, min_periods=length, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+def ta_atr(high, low, close, length):
+    tr1 = high - low
+    tr2 = np.abs(high - close.shift(1))
+    tr3 = np.abs(low - close.shift(1))
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/length, min_periods=length, adjust=False).mean()
+    return atr
+
+def alma(src, length, offset, sigma):
+    m = (length - 1) * offset
+    s = length / sigma
+    wts = np.zeros(length)
+    for k in range(length):
+        wts[k] = np.exp(-((k - m) ** 2) / (2 * s * s))
+    wts = wts / wts.sum()
+    result = pd.Series(0.0, index=src.index)
+    for i in range(length - 1, len(src)):
+        result.iloc[i] = (src.iloc[i-length+1:i+1] * wts).sum()
+    return result
+
+def ta_linreg(src, length):
+    x = np.arange(length)
+    x_mean = (length - 1) / 2.0
+    result = pd.Series(np.nan, index=src.index)
+    for i in range(length - 1, len(src)):
+        window = src.iloc[i-length+1:i+1].values
+        y_mean = window.mean()
+        num = np.sum((x - x_mean) * (window - y_mean))
+        denom = np.sum((x - x_mean) ** 2)
+        if denom != 0:
+            slope = num / denom
+            intercept = y_mean - slope * x_mean
+            result.iloc[i] = intercept
+        else:
+            result.iloc[i] = window[-1]
+    return result
+
+def ta_wma(src, length):
+    weights = np.arange(1, length + 1)
+    sum_weights = length * (length + 1) / 2
+    result = pd.Series(np.nan, index=src.index)
+    for i in range(length - 1, len(src)):
+        window = src.iloc[i-length+1:i+1].values
+        result.iloc[i] = np.dot(window, weights) / sum_weights
+    return result
+
+df = df.copy()
+df = df.sort_values('time').reset_index(drop=True)
+
+PriceE2PSS = (df['high'] + df['low']) / 2
+PeriodE2PSS = 15
+pi = 2 * np.arcsin(1)
+a1 = np.exp(-1.414 * pi / PeriodE2PSS)
+b1 = 2 * a1 * np.cos(1.414 * pi / PeriodE2PSS)
+coef2 = b1
+coef3 = -a1 * a1
+coef1 = 1 - coef2 - coef3
+
+Filt2 = pd.Series(np.nan, index=df.index, dtype=float)
+Filt2.iloc[0] = PriceE2PSS.iloc[0]
+Filt2.iloc[1] = PriceE2PSS.iloc[1]
+for i in range(2, len(df)):
+    Filt2.iloc[i] = coef1 * PriceE2PSS.iloc[i] + coef2 * Filt2.iloc[i-1] + coef3 * Filt2.iloc[i-2]
+
+TriggerE2PSS = Filt2.shift(1)
+signalLongE2PSS = Filt2 > TriggerE2PSS
+signalShortE2PSS = Filt2 < TriggerE2PSS
+
+RSI_Period = 6
+SF = 6
+QQE = 3
+ThreshHold = 3
+Wilders_Period = RSI_Period * 2 - 1
+Rsi = ta_rsi(df['close'], RSI_Period)
+RsiMa = Rsi.ewm(span=SF, adjust=False).mean()
+AtrRsi = np.abs(RsiMa.shift(1) - RsiMa)
+MaAtrRsi = AtrRsi.ewm(span=Wilders_Period, adjust=False).mean()
+dar = MaAtrRsi.ewm(span=Wilders_Period, adjust=False).mean() * QQE
+
+longband = pd.Series(0.0, index=df.index, dtype=float)
+shortband = pd.Series(0.0, index=df.index, dtype=float)
+trend = pd.Series(1, index=df.index, dtype=int)
+FastAtrRsiTL = pd.Series(0.0, index=df.index, dtype=float)
+
+for i in range(len(df)):
+    RSIndex_val = RsiMa.iloc[i]
+    prev_RSIndex = RsiMa.iloc[i-1] if i > 0 else RSIndex_val
+    newshortband_val = RSIndex_val + dar.iloc[i]
+    newlongband_val = RSIndex_val - dar.iloc[i]
+    if i == 0:
+        longband.iloc[i] = newlongband_val
+        shortband.iloc[i] = newshortband_val
+    else:
+        prev_longband = longband.iloc[i-1]
+        prev_shortband = shortband.iloc[i-1]
+        if prev_RSIndex > prev_longband and RSIndex_val > prev_longband:
+            longband.iloc[i] = max(prev_longband, newlongband_val)
+        else:
+            longband.iloc[i] = newlongband_val
+        if prev_RSIndex < prev_shortband and RSIndex_val < prev_shortband:
+            shortband.iloc[i] = min(prev_shortband, newshortband_val)
+        else:
+            shortband.iloc[i] = newshortband_val
+    if i >= 1:
+        longband_prev = longband.iloc[i-1]
+        shortband_prev = shortband.iloc[i-1]
+        cross_1 = longband_prev < RSIndex_val and longband_prev <= prev_RSIndex
+        if RSIndex_val < shortband_prev and prev_RSIndex >= shortband_prev:
+            trend.iloc[i] = 1
+        elif cross_1:
+            trend.iloc[i] = -1
+        else:
+            trend.iloc[i] = trend.iloc[i-1]
+    FastAtrRsiTL.iloc[i] = longband.iloc[i] if trend.iloc[i] == 1 else shortband.iloc[i]
+
+length = 50
+qqeMult = 0.35
+basis = (FastAtrRsiTL - 50).rolling(length).mean()
+dev = (FastAtrRsiTL - 50).rolling(length).std()
+upper = basis + qqeMult * dev
+lower = basis - qqeMult * dev
+
+RSI_Period2 = 6
+SF2 = 5
+QQE2 = 1.61
+ThreshHold2 = 3
+Wilders_Period2 = RSI_Period2 * 2 - 1
+Rsi2 = ta_rsi(df['close'], RSI_Period2)
+RsiMa2 = Rsi2.ewm(span=SF2, adjust=False).mean()
+AtrRsi2 = np.abs(RsiMa2.shift(1) - RsiMa2)
+MaAtrRsi2 = AtrRsi2.ewm(span=Wilders_Period2, adjust=False).mean()
+dar2 = MaAtrRsi2.ewm(span=Wilders_Period2, adjust=False).mean() * QQE2
+
+longband2 = pd.Series(0.0, index=df.index, dtype=float)
+shortband2 = pd.Series(0.0, index=df.index, dtype=float)
+trend2 = pd.Series(1, index=df.index, dtype=int)
+
+for i in range(len(df)):
+    RSIndex2_val = RsiMa2.iloc[i]
+    prev_RSIndex2 = RsiMa2.iloc[i-1] if i > 0 else RSIndex2_val
+    newshortband2_val = RSIndex2_val + dar2.iloc[i]
+    newlongband2_val = RSIndex2_val - dar2.iloc[i]
+    if i == 0:
+        longband2.iloc[i] = newlongband2_val
+        shortband2.iloc[i] = newshortband2_val
+    else:
+        prev_longband2 = longband2.iloc[i-1]
+        prev_shortband2 = shortband2.iloc[i-1]
+        if prev_RSIndex2 > prev_longband2 and RSIndex2_val > prev_longband2:
+            longband2.iloc[i] = max(prev_longband2, newlongband2_val)
+        else:
+            longband2.iloc[i] = newlongband2_val
+        if prev_RSIndex2 < prev_shortband2 and RSIndex2_val < prev_shortband2:
+            shortband2.iloc[i] = min(prev_shortband2, newshortband2_val)
+        else:
+            shortband2.iloc[i] = newshortband2_val
+    if i >= 1:
+        longband2_prev = longband2.iloc[i-1]
+        shortband2_prev = shortband2.iloc[i-1]
+        cross_2 = longband2_prev < RSIndex2_val and longband2_prev <= prev_RSIndex2
+        if RSIndex2_val < shortband2_prev and prev_RSIndex2 >= shortband2_prev:
+            trend2.iloc[i] = 1
+        elif cross_2:
+            trend2.iloc[i] = -1
+        else:
+            trend2.iloc[i] = trend2.iloc[i-1]
+
+Greenbar1 = RsiMa2 - 50 > ThreshHold2
+Greenbar2 = (RsiMa - 50) > upper
+Redbar1 = RsiMa2 - 50 < 0 - ThreshHold2
+Redbar2 = (RsiMa - 50) < lower
+
+qqeBuy = Greenbar1 & Greenbar2
+qqeSell = Redbar1 & Redbar2
+
+trendilo_smooth = 1
+trendilo_length = 50
+trendilo_offset = 0.85
+trendilo_sigma = 6
+
+pct_change = df['close'].pct_change(trendilo_smooth) * 100
+avg_pct_change = alma(pct_change, trendilo_length, trendilo_offset, trendilo_sigma)
+rms = np.sqrt((avg_pct_change ** 2).rolling(trendilo_length).mean())
+trendilo_dir = pd.Series(0, index=df.index, dtype=int)
+trendilo_dir[avg_pct_change > rms] = 1
+trendilo_dir[avg_pct_change < -rms] = -1
+
+trendiloBuy = trendilo_dir == 1
+trendiloSell = trendilo_dir == -1
+
+length_TTMS = 20
+BB_mult_TTMS = 2.0
+KC_mult_low_TTMS = 2.0
+
+BB_basis_TTMS = df['close'].rolling(length_TTMS).mean()
+dev_TTMS = df['close'].rolling(length_TTMS).std()
+BB_upper_TTMS = BB_basis_TTMS + BB_mult_TTMS * dev_TTMS
+BB_lower_TTMS = BB_basis_TTMS - BB_mult_TTMS * dev_TTMS
+
+KC_basis_TTMS = df['close'].rolling(length_TTMS).mean()
+devKC_TTMS = ta_atr(df['high'], df['low'], df['close'], length_TTMS)
+KC_upper_low_TTMS = KC_basis_TTMS + devKC_TTMS * KC_mult_low_TTMS
+KC_lower_low_TTMS = KC_basis_TTMS - devKC_TTMS * KC_mult_low_TTMS
+
+NoSqz_TTMS = (BB_lower_TTMS < KC_lower_low_TTMS) | (BB_upper_TTMS > KC_upper_low_TTMS)
+
+highest_high = df['high'].rolling(length_TTMS).max()
+lowest_low = df['low'].rolling(length_TTMS).min()
+sma_close = df['close'].rolling(length_TTMS).mean()
+middle = (highest_high + lowest_low) / 2 + sma_close
+price_diff = (df['close'] - middle / 2)
+mom_TTMS = ta_linreg(price_diff, length_TTMS)
+
+ttmBuy = NoSqz_TTMS & (mom_TTMS > 0) & (mom_TTMS > mom_TTMS.shift(1))
+ttmSell = NoSqz_TTMS & (mom_TTMS < 0) & (mom_TTMS < mom_TTMS.shift(1))
+
+vol_length = 50
+vol_threshold = 75
+vol_ma = df['volume'].rolling(vol_length).mean()
+vol_std = df['volume'].rolling(vol_length).std()
+norm_vol = (df['volume'] - vol_ma) / vol_std * 100 + 100
+volFilter = norm_vol > vol_threshold
+
+ssl_len = 60
+hma_len = ssl_len
+half_len = int(hma_len / 2)
+sqrt_len = int(np.sqrt(hma_len))
+
+def hma_calc(src, length):
+    half_len = int(length / 2)
+    sqrt_len = int(np.sqrt(length))
+    wma_half = ta_wma(src, half_len)
+    wma_full = ta_wma(src, length)
+    diff = 2 * wma_half - wma_full
+    return ta_wma(diff, sqrt_len)
+
+ssl_baseline = hma_calc(df['close'], ssl_len)
+ssl_down = hma_calc(df['low'], ssl_len)
+ssl_up = hma_calc(df['high'], ssl_len)
+
+ssl_hlv = pd.Series(0, index=df.index, dtype=int)
+for i in range(len(ssl_baseline)):
+    if pd.isna(ssl_baseline.iloc[i]) or (i > 0 and pd.isna(ssl_baseline.iloc[i-1])):
+        ssl_hlv.iloc[i] = 0
+    elif ssl_baseline.iloc[i] > ssl_baseline.iloc[i-1]:
+        ssl_hlv.iloc[i] = 1
+    else:
+        ssl_hlv.iloc[i] = -1
+
+sslBuy = ssl_hlv > 0
+sslSell = ssl_hlv < 0
+
+longCondition = signalLongE2PSS & qqeBuy & trendiloBuy & ttmBuy & sslBuy & volFilter
+shortCondition = signalShortE2PSS & qqeSell & trendiloSell & ttmSell & sslSell & volFilter
+
+entries = []
+trade_num = 1
+for i in range(len(df)):
+    if i < 3:
+        continue
+    ts = int(df['time'].iloc[i])
+    entry_price = df['close'].iloc[i]
+    entry_time = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    if longCondition.iloc[i]:
+        entry = {
+            'trade_num': trade_num,
+            'direction': 'long',
+            'entry_ts': ts,
+            'entry_time': entry_time,
+            'entry_price_guess': entry_price,
+            'exit_ts': 0,
+            'exit_time': '',
+            'exit_price_guess': 0.0,
+            'raw_price_a': entry_price,
+            'raw_price_b': entry_price
+        }
+        entries.append(entry)
+        trade_num += 1
+    elif shortCondition.iloc[i]:
+        entry = {
+            'trade_num': trade_num,
+            'direction': 'short',
+            'entry_ts': ts,
+            'entry_time': entry_time,
+            'entry_price_guess': entry_price,
+            'exit_ts': 0,
+            'exit_time': '',
+            'exit_price_guess': 0.0,
+            'raw_price_a': entry_price,
+            'raw_price_b': entry_price
+        }
+        entries.append(entry)
+        trade_num += 1
+
+return entries

@@ -1,0 +1,11 @@
+df['datetime'] = pd.to_datetime(df['time'], unit='s', utc=True)
+df.set_index('datetime', inplace=True)
+# Resample to 4H
+df_4h = df.resample('4h').agg({'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'})
+# Compute EMA 9 and 18 on the 4h close
+ema9_4h = df_4h['close'].ewm(span=9, adjust=False).mean()
+ema18_4h = df_4h['close'].ewm(span=18, adjust=False).mean()
+# Align to original df index: we can forward-fill the ema values to match the original timeframe
+# But we need to map each bar in original df to the corresponding 4h bar.
+# We can compute the 4h period for each timestamp: floor to nearest 4h start.
+# Then merge.

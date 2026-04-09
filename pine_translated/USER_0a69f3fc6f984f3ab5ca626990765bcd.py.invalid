@@ -1,0 +1,6 @@
+def pivothigh(high, left, right):
+    # high is series
+    # left: number of bars to left, right: number of bars to right
+    # We can compute rolling max for left side, and for right side using shift(-right)
+    left_max = high.rolling(left).max()
+    # For right side we need shift(-right) and then rolling max of reversed? Not straightforward.

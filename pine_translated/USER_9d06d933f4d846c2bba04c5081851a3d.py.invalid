@@ -1,0 +1,7 @@
+def generate_entries(df: pd.DataFrame) -> list:
+    # Calculate EMAs
+    # cema9 = close.ewm(span=9, adjust=False).mean()
+    # cema18 = close.ewm(span=18, adjust=False).mean()
+    
+    # For 240 timeframe, we need to resample
+    # Assuming df has 'time' column with unix timestamps

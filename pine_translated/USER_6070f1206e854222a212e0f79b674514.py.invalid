@@ -1,0 +1,8 @@
+high_arr = df['high'].values
+n = len(high_arr)
+pivots = np.zeros(n, dtype=bool)
+for i in range(N, n-N):
+    left_max = np.max(high_arr[i-N:i])
+    right_max = np.max(high_arr[i+1:i+N+1])
+    if high_arr[i] == left_max and high_arr[i] == right_max:
+        pivots[i] = True

@@ -1,0 +1,9 @@
+def generate_entries(df: pd.DataFrame) -> list:
+    # Ensure required columns exist
+    # Compute hour
+    # Compute isValidTradeTime series
+    # Compute pivot high and low
+    # Compute ATR (Wilder)
+    # Compute long condition: crossover(close, pivot_high) & isValidTradeTime
+    # Compute short condition: crossunder(close, pivot_low) & isValidTradeTime
+    # Iterate over bars, if condition true, create entry dict.

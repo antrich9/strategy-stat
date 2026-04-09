@@ -1,0 +1,159 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    results = []
+    trade_num = 1
+    
+    # ATR calculation (Wilder)
+    tr = np.maximum(df['high'] - df['low'], 
+                    np.maximum(np.abs(df['high'] - df['close'].shift(1)),
+                               np.abs(df['low'] - df['close'].shift(1)))
+    atr = pd.Series([np.nan] * len(df), index=df.index)
+    atr.iloc[0] = tr.iloc[0]
+    for i in range(1, len(df)):
+        atr.iloc[i] = (atr.iloc[i-1] * 13 + tr.iloc[i]) / 14
+    
+    fvg_th = 0.5  # Fair Value Gap Width Filter
+    
+    # Detect new trading day (9:30 AM ET assumption - using time column for hour/minute)
+    df = df.copy()
+    df['hour'] = pd.to_datetime(df['time'], unit='s', utc=True).dt.hour
+    df['minute'] = pd.to_datetime(df['time'], unit='s', utc=True).dt.minute
+    new_day = pd.Series([False] * len(df), index=df.index)
+    
+    # Shift to compare with previous row
+    hour_shifted = df['hour'].shift(1)
+    minute_shifted = df['minute'].shift(1)
+    hour_diff = (df['hour'] != hour_shifted) | (df['minute'] != minute_shifted)
+    new_day.iloc[1:] = hour_diff.iloc[1:]
+    new_day.iloc[0] = True
+    
+    # Track state variables
+    pdh = np.nan
+    pdl = np.nan
+    swept_high = False
+    swept_low = False
+    found_fvg = False
+    trade_today = False
+    first_sweep_fvg_taken = False
+    
+    # FVG conditions
+    low_vals = df['low']
+    high_vals = df['high']
+    close_vals = df['close']
+    
+    bull_fvg = (low_vals > high_vals.shift(2)) & (low_vals.shift(1) > high_vals.shift(2))
+    bear_fvg = (high_vals < low_vals.shift(2)) & (high_vals.shift(1) < low_vals.shift(2))
+    
+    # ATR filtered FVG
+    atr_filtered = atr * fvg_th
+    bull_fvg_filtered = ((low_vals - high_vals.shift(2)) > atr_filtered) & (low_vals > high_vals.shift(2)) & (close_vals.shift(1) > high_vals.shift(2))
+    bear_fvg_filtered = ((low_vals.shift(2) - high_vals) > atr_filtered) & (high_vals < low_vals.shift(2)) & (close_vals.shift(1) < low_vals.shift(2))
+    
+    # Track last FVG type
+    last_fvg_type = None
+    
+    # Iterate through bars
+    for i in range(len(df)):
+        row = df.iloc[i]
+        
+        # Check for new trading day (simplified - at hour 9, minute 30)
+        if i > 0:
+            prev_row = df.iloc[i-1]
+            is_new_trading_day = (row['hour'] == 9 and row['minute'] == 30 and 
+                                  (prev_row['hour'] != 9 or prev_row['minute'] != 30))
+        else:
+            is_new_trading_day = False
+        
+        if new_day.iloc[i]:
+            # Update PDH/PDL from previous day (look back to find previous day's high/low)
+            if i >= 2:
+                prev_day_high = df['high'].iloc[i-1]
+                prev_day_low = df['low'].iloc[i-1]
+                pdh = prev_day_high
+                pdl = prev_day_low
+        
+        # Reset daily flags at market open
+        if is_new_trading_day:
+            swept_high = False
+            swept_low = False
+            found_fvg = False
+            trade_today = False
+            first_sweep_fvg_taken = False
+        
+        # Check for sweep conditions
+        if not np.isnan(pdh) and not swept_high and row['high'] > pdh:
+            swept_high = True
+        if not np.isnan(pdl) and not swept_low and row['low'] < pdl:
+            swept_low = True
+        
+        # Show FVG conditions after sweep
+        show_bull_fvg = (swept_high or swept_low) and bull_fvg_filtered.iloc[i] and not found_fvg and not first_sweep_fvg_taken
+        show_bear_fvg = (swept_high or swept_low) and bear_fvg_filtered.iloc[i] and not found_fvg and not first_sweep_fvg_taken
+        
+        if show_bull_fvg:
+            found_fvg = True
+            last_fvg_type = 'bull'
+        
+        if show_bear_fvg:
+            found_fvg = True
+            last_fvg_type = 'bear'
+        
+        # Generate entries based on FVG detection
+        # Entry triggered when FVG is first detected (found_fvg just became True)
+        if show_bull_fvg and not trade_today:
+            entry_price = row['close']
+            entry_ts = int(row['time'])
+            entry_time = datetime.fromtimestamp(entry_ts, tz=timezone.utc).isoformat()
+            
+            results.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': entry_ts,
+                'entry_time': entry_time,
+                'entry_price_guess': entry_price,
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': entry_price,
+                'raw_price_b': entry_price
+            })
+            trade_num += 1
+            trade_today = True
+            first_sweep_fvg_taken = True
+        
+        elif show_bear_fvg and not trade_today:
+            entry_price = row['close']
+            entry_ts = int(row['time'])
+            entry_time = datetime.fromtimestamp(entry_ts, tz=timezone.utc).isoformat()
+            
+            results.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': entry_ts,
+                'entry_time': entry_time,
+                'entry_price_guess': entry_price,
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': entry_price,
+                'raw_price_b': entry_price
+            })
+            trade_num += 1
+            trade_today = True
+            first_sweep_fvg_taken = True
+    
+    return results

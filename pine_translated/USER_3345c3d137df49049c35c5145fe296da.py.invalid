@@ -1,0 +1,10 @@
+# Highest high over length
+highest_high = df['high'].rolling(length_TTMS).max()
+# Lowest low over length
+lowest_low = df['low'].rolling(length_TTMS).min()
+# Average of highest and lowest
+avg_high_low = (highest_high + lowest_low) / 2
+# SMA of close
+sma_close = df['close'].rolling(length_TTMS).mean()
+# Momentum value
+mom_TTMS_raw = df['close'] - avg_high_low + sma_close

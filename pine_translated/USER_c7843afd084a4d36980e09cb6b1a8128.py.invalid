@@ -1,0 +1,5 @@
+# Bullish FVG: low of current 4H candle > high of 2 4H candles ago
+bfvg_condition = df_4h['low'] > df_4h['high'].shift(2)
+
+# Bearish FVG: high of current 4H candle < low of 2 4H candles ago
+sfvg_condition = df_4h['high'] < df_4h['low'].shift(2)

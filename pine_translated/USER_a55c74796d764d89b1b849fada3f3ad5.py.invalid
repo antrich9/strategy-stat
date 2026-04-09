@@ -1,0 +1,5 @@
+def generate_entries(df: pd.DataFrame) -> list:
+    # Ensure we have required columns
+    # Compute indicators
+    # Compute conditions
+    # Iterate and collect entries

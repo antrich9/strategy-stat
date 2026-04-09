@@ -1,0 +1,2 @@
+if pType == 'ph' ? y2 < ta.valuewhen(retEvent, y2, 0) : y2 > ta.valuewhen(retEvent, y2, 0)
+                retEvent := retActive

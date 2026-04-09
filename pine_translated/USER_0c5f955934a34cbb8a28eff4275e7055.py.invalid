@@ -1,0 +1,84 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    df = df.copy()
+    
+    df['datetime'] = pd.to_datetime(df['time'], unit='s', utc=True)
+    df['datetime_london'] = df['datetime'].dt.tz_convert('Europe/London')
+    
+    df['4h_start'] = df['datetime_london'].dt.floor('4h')
+    df['is_new_4h'] = df['4h_start'] != df['4h_start'].shift(1)
+    
+    tf = df.set_index('datetime_london')
+    tf4h = tf.resample('4h').agg({
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last'
+    }).dropna()
+    
+    tf4h['high_2'] = tf4h['high'].shift(2)
+    tf4h['low_2'] = tf4h['low'].shift(2)
+    tf4h['bull_fvg'] = tf4h['low'] > tf4h['high_2']
+    tf4h['bear_fvg'] = tf4h['high'] < tf4h['low_2']
+    
+    last_fvg = 0
+    last_fvgs = []
+    for idx, row in tf4h.iterrows():
+        if row['bull_fvg']:
+            last_fvg = 1
+        elif row['bear_fvg']:
+            last_fvg = -1
+        last_fvgs.append(last_fvg)
+    tf4h['last_fvg'] = last_fvgs
+    
+    tf4h.reset_index(inplace=True)
+    sharp_turns = {}
+    for idx, row in tf4h.iterrows():
+        4h_ts = row['datetime_london']
+        last_fvg = row['last_fvg']
+        bull_fvg = row['bull_fvg']
+        bear_fvg = row['bear_fvg']
+        
+        if bull_fvg and last_fvg == 1:
+            sharp_turns[4h_ts] = 'long'
+        elif bear_fvg and last_fvg == -1:
+            sharp_turns[4h_ts] = 'short'
+    
+    entries = []
+    trade_num = 1
+    
+    for i in range(len(df)):
+        if df['is_new_4h'].iloc[i]:
+            4h_ts = df['4h_start'].iloc[i]
+            if 4h_ts in sharp_turns:
+                direction = sharp_turns[4h_ts]
+                ts = df['time'].iloc[i]
+                entry_price = df['close'].iloc[i]
+                
+                if direction == 'long':
+                    bull_row = tf4h[tf4h['datetime_london'] == 4h_ts].iloc[0]
+                    gap = bull_row['low'] - bull_row['high_2']
+                    raw_a = raw_b = gap
+                else:
+                    bear_row = tf4h[tf4h['datetime_london'] == 4h_ts].iloc[0]
+                    gap = bear_row['high'] - bear_row['low_2']
+                    raw_a = raw_b = gap
+                
+                entries.append({
+                    'trade_num': trade_num,
+                    'direction': direction,
+                    'entry_ts': int(df['time'].iloc[i]),
+                    'entry_time': df['datetime_london'].iloc[i].isoformat(),
+                    'entry_price_guess': entry_price,
+                    'exit_ts': 0,
+                    'exit_time': '',
+                    'exit_price_guess': 0.0,
+                    'raw_price_a': raw_a,
+                    'raw_price_b': raw_b
+                })
+                trade_num += 1
+    
+    return entries

@@ -1,0 +1,37 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    lookback_bars = 12
+    threshold = 0.0
+    
+    bull_fvg = (df['low'] > df['high'].shift(2)) & (df['close'].shift(1) > df['high'].shift(2))
+    bear_fvg = (df['high'] < df['low'].shift(2)) & (df['close'].shift(1) < df['low'].shift(2))
+    
+    def barssince(cond):
+        result = pd.Series(np.nan, index=df.index, dtype=float)
+        count = 0
+        for i in range(len(df)):
+            if cond.iloc[i]:
+                count = 0
+            else:
+                count += 1
+            result.iloc[i] = count
+        return result
+    
+    bull_since = barssince(bear_fvg)
+    bull_cond_1 = bull_fvg.shift(1) & (bull_since <= lookback_bars)
+    
+    combined_low_bull = np.where(bull_cond_1, df['high'].shift(1), np.nan)
+    combined_high_bull = np.where(bull_cond_1, df['low'].shift(-1), np.nan)
+    
+    bull_result = bull_cond_1 & ((combined_high_bull - combined_low_bull) >= threshold)
+    
+    is_up = df['close'] > df['open']
+    is_down = df['close'] < df['open']
+    
+    ob_up = is_down.shift(1) & is_up & (df['close'] > df['high'].shift(1))
+    ob_down = is_up.shift(1) & is_down & (df['close'] < df['low'].shift(1))
+    
+    fvg_up = df['

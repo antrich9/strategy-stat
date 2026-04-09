@@ -1,0 +1,107 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    
+    # Initialize state variables
+    lastFVG = 0  # 1 = Bullish, -1 = Bearish, 0 = None
+    last_entry = None
+    takenBullishTrade = False
+    takenBearishTrade = False
+    
+    entries = []
+    trade_num = 1
+    
+    # Compute indicators
+    # SMA for volume filter (54 period)
+    sma54 = df['close'].rolling(54).mean()
+    
+    # Previous day's high and low
+    prevDayHigh = df['high'].shift(1).resample('D').max().reindex(df.index, method='ffill')
+    prevDayLow = df['low'].shift(1).resample('D').min().reindex(df.index, method='ffill')
+    
+    # Volume filter
+    volfilt = df['volume'] > df['volume'].rolling(9).mean() * 1.5
+    
+    # ATR filter
+    atr = ta ATR(df['high'], df['low'], df['close'], 20) / 1.5
+    atrfilt = (df['low'] - df['high'].shift(2) > atr) | (df['low'].shift(2) - df['high'] > atr)
+    
+    # Trend filter
+    loc = sma54
+    loc2 = loc > loc.shift(1)
+    locfiltb = loc2
+    locfilts = ~loc2
+    
+    # Bullish FVG: low > high[2] and filters
+    bfvg = (df['low'] > df['high'].shift(2)) & volfilt & atrfilt & locfiltb
+    
+    # Bearish FVG: high < low[2] and filters
+    sfvg = (df['high'] < df['low'].shift(2)) & volfilt & atrfilt & locfilts
+    
+    # Swept conditions
+    sweptHigh = df['high'] > prevDayHigh
+    sweptLow = df['low'] < prevDayLow
+    
+    # Iterate through bars
+    for i in range(len(df)):
+        current_bfvg = bfvg.iloc[i]
+        current_sfvg = sfvg.iloc[i]
+        current_sweptLow = sweptLow.iloc[i]
+        current_sweptHigh = sweptHigh.iloc[i]
+        
+        # Update lastFVG and last_entry based on price action
+        if df['low'].iloc[i] > df['high'].iloc[i-2] if i >= 2 else False:
+            lastFVG = 1
+            last_entry = "Entered Bullish FVG"
+        elif df['high'].iloc[i] < df['low'].iloc[i-2] if i >= 2 else False:
+            lastFVG = -1
+            last_entry = "Entered Bearish FVG"
+        
+        # Check for bullish entry
+        if current_bfvg and lastFVG == -1 and last_entry == "Entered Bullish FVG" and not takenBullishTrade and current_sweptLow:
+            takenBullishTrade = True
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': df['time'].iloc[i],
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                'entry_price_guess': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': df['close'].iloc[i],
+                'raw_price_b': df['close'].iloc[i]
+            })
+            trade_num += 1
+        
+        # Check for bearish entry
+        elif current_sfvg and lastFVG == 1 and last_entry == "Entered Bearish FVG" and not takenBearishTrade and current_sweptHigh:
+            takenBearishTrade = True
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': df['time'].iloc[i],
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                'entry_price_guess': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': df['close'].iloc[i],
+                'raw_price_b': df['close'].iloc[i]
+            })
+            trade_num += 1
+    
+    return entries

@@ -1,0 +1,5 @@
+def compute_pivots(df, period):
+    high_pivots = (df['high'] == df['high'].rolling(period*2+1, center=True).max()) & (df['high'].shift(period) == df['high'])
+    low_pivots = (df['low'] == df['low'].rolling(period*2+1, center=True).min()) & (df['low'].shift(period) == df['low'])
+    # Actually, we need to ensure that the pivot is the highest in the window period*2+1 and that there is a shift? The typical pivothigh in Pine is: ta.pivothigh(period, period) means the pivot is the highest in the last period bars and next period bars. So we can compute as:
+    # For each i, if i >= period and i < len(df)-period, then if df['high'].iloc[i] == max(df['high'].iloc[i-period:i+period+1]) then it's a pivot.

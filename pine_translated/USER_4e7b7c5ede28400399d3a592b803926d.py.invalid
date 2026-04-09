@@ -1,0 +1,24 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    df = df.copy()
+    
+    # Convert unix timestamp to datetime (UTC)
+    df['dt'] = pd.to_datetime(df['time'], unit='s', utc=True)
+    
+    # Resample lower timeframe data (input df) to 4H for higher timeframe analysis
+    # Assuming standard 4H alignment (multiples of 4 hours from day start)
+    df_4h = df.set_index('dt').resample('4h').agg({
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last',
+        'volume': 'sum'
+    }).dropna()
+    
+    # --- Calculate Indicators on 4H Data ---
+    
+    # ATR (Wilder's)
+    high, low, close_4h = df_4h['high'], df_4h['low'], df_4h['close

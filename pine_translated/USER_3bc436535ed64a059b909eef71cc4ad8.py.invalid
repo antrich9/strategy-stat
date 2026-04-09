@@ -1,0 +1,132 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    data = df.copy()
+    
+    # Parameters from inputs
+    length = 5
+    momentum_threshold_base = 0.01
+    min_signal_distance = 5
+    pre_momentum_factor_base = 0.5
+    volume_long_period = 50
+    volume_short_period = 5
+    breakout_period = 5
+    
+    # Input bools
+    use_momentum_filter = True
+    use_trend_filter = True
+    use_lower_tf_filter = True
+    use_volume_filter = True
+    use_breakout_filter = True
+    restrict_repeated_signals = True
+    
+    # Higher TF defaults
+    higher_tf_choice = "5M"
+    lower_tf_choice = "5M"
+    restrict_trend_tf_choice = "5M"
+    
+    # Wilder ATR(14)
+    prev_close = data['close'].shift(1)
+    tr1 = data['high'] - data['low']
+    tr2 = (data['high'] - prev_close).abs()
+    tr3 = (data['low'] - prev_close).abs()
+    true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    first_atr = true_range.iloc[:14].mean()
+    atr = pd.Series(index=data.index, dtype=float)
+    atr.iloc[13] = first_atr
+    alpha = 2.0 / 15.0
+    for i in range(14, len(data)):
+        atr.iloc[i] = (1 - alpha) * atr.iloc[i-1] + alpha * true_range.iloc[i]
+    
+    volatility_factor = atr / data['close']
+    momentum_threshold = momentum_threshold_base * (1 + volatility_factor * 2)
+    pre_momentum_factor = pre_momentum_factor_base * (1 - volatility_factor * 0.5)
+    pre_momentum_threshold = momentum_threshold * pre_momentum_factor
+    
+    # Volume
+    vol_avg_50 = data['volume'].rolling(volume_long_period).mean()
+    vol_short = data['volume'].rolling(volume_short_period).mean()
+    vol_condition = (data['volume'] > vol_avg_50) & (vol_short.diff() > 0)
+    
+    # Breakout
+    highest_breakout = data['high'].rolling(breakout_period).max()
+    lowest_breakout = data['low'].rolling(breakout_period).min()
+    
+    # FVG
+    bfvg = data['low'] > data['high'].shift(2)
+    sfvg = data['high'] < data['low'].shift(2)
+    
+    # CVD
+    delta_volume = np.where(data['close'] > data['close'].shift(1), data['volume'],
+                             np.where(data['close'] < data['close'].shift(1), -data['volume'], 0))
+    raw_cvd = pd.Series(delta_volume).cumsum()
+    
+    # Price change
+    price_change = ((data['close'] - data['close'].shift(1)) / data['close'].shift(1)) * 100
+    
+    # Trend calculation (simplified single TF)
+    ema20 = data['close'].ewm(span=20, adjust=False).mean()
+    typical = (data['high'] + data['low'] + data['close']) / 3
+    vwap = (typical * data['volume']).cumsum() / data['volume'].cumsum()
+    
+    # Resolve TF trend
+    def resolve_tf(tf_choice, ema, vwap):
+        return np.where((data['close'] > ema) & (data['close'] > vwap), 1,
+               np.where((data['close'] < ema) & (data['close'] < vwap), -1, 0))
+    
+    higher_tf_trend = resolve_tf(higher_tf_choice, ema20, vwap)
+    lower_tf_trend = resolve_tf(lower_tf_choice, ema20, vwap)
+    restrict_tf_trend = resolve_tf(restrict_trend_tf_choice, ema20, vwap)
+    
+    # Conditions
+    early_buy = (price_change > momentum_threshold) if use_momentum_filter else True
+    early_sell = (price_change < -momentum_threshold) if use_momentum_filter else True
+    
+    bullish_trend_ok = (higher_tf_trend == 1) if use_trend_filter else True
+    bearish_trend_ok = (higher_tf_trend == -1) if use_trend_filter else True
+    
+    lower_tf_bullish = lower_tf_trend == 1
+    lower_tf_bearish = lower_tf_trend == -1
+    lower_tf_not_neutral = lower_tf_trend != 0
+    
+    buy_lower_tf_ok = (lower_tf_trend != -1) if use_lower_tf_filter else True
+    sell_lower_tf_ok = (lower_tf_trend != 1) if use_lower_tf_filter else True
+    
+    buy_volume_ok = vol_condition if use_volume_filter else True
+    sell_volume_ok = vol_condition if use_volume_filter else True
+    
+    buy_breakout_ok = (data['close'] > highest_breakout.shift(1)) if use_breakout_filter else True
+    sell_breakout_ok = (data['close'] < lowest_breakout.shift(1)) if use_breakout_filter else True
+    
+    buy_signal = early_buy & bullish_trend_ok & buy_lower_tf_ok & buy_volume_ok & buy_breakout_ok
+    sell_signal = early_sell & bearish_trend_ok & sell_lower_tf_ok & sell_volume_ok & sell_breakout_ok
+    
+    last_signal_bar = -min_signal_distance - 1
+    last_signal = "Neutral"
+    last_trend = 0
+    last_fvg = 0
+    entries = []
+    trade_num = 1
+    
+    for i in range(14, len(data)):
+        bar_distance_ok = i - last_signal_bar >= min_signal_distance
+        
+        buy_allowed = True
+        sell_allowed = True
+        
+        if restrict_repeated_signals:
+            if last_signal == "Sell":
+                if restrict_tf_trend[i] == last_trend or restrict_tf_trend[i] == -1:
+                    sell_allowed = False
+            if last_signal == "Buy":
+                if restrict_tf_trend[i] == last_trend or restrict_tf_trend[i] == 1:
+                    buy_allowed = False
+        
+        curr_bfvg = bfvg.iloc[i]
+        curr_sfvg = sfvg.iloc[i]
+        bull_sharp = curr_bfvg and last_fvg == -1
+        bear_sharp = curr_sfvg and last_fvg == 1
+        
+        if curr_bfvg

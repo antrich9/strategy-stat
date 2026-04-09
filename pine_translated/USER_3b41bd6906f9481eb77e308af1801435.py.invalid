@@ -1,0 +1,378 @@
+The user wants me to convert a Pine Script strategy into a Python function that generates entries. Let me analyze the Pine Script to understand the entry logic.
+
+Looking at the Pine Script, I need to identify the `strategy.entry()` calls. Let me search through the code...
+
+I see there are various conditions and logic, but I need to find the actual entry points. Looking through the code:
+
+1. There are breakout conditions (`sBreak`, `rBreak`)
+2. There are retest conditions (`s1`, `s2`, `s3`, `s4`, `r1`, `r2`, `r3`, `r4`)
+3. There's a `retestEvent` function that seems to handle retest logic
+
+The code appears to be cut off at the end, but based on the structure, I need to identify where `strategy.entry()` would be called. Looking at the pattern, the strategy likely enters positions based on:
+- Breakout conditions (co, cu)
+- Retest conditions
+
+The strategy parameters include:
+- `tradeDirection = input.string("Both", "Trade Direction", options=["Long", "Short", "Both"])`
+- ATR-based stop loss and take profit
+- Trading hours (7-18)
+
+Let me look at the retestEvent function more carefully. It seems to be handling the actual entry logic.
+
+The code shows:
+- Breakouts: cu (crossunder for support break), co (crossover for resistance break)
+- Retests: s1-s4 for support retests, r1-r4 for resistance retests
+
+Looking at the code structure, the entries would likely be:
+1. Long entries when support breakout happens with retest confirmation
+2. Short entries when resistance breakout happens with retest confirmation
+
+Let me trace through the logic:
+
+For long entries (sBreak):
+- sBreak is set to true when cu (crossunder close below support box bottom)
+- Retest conditions s1, s2, s3, s4 check various scenarios of price interacting with the support box
+
+
+- The retestEvent function handles the actual entry when retest conditions are met
+
+For short entries (rBreak):
+- rBreak is set to true when co (crossover close above resistance box top)
+- Retest conditions r1, r2, r3, r4 check various scenarios of price interacting with the resistance box
+
+The entries would be triggered by the retestEvent function. However, the code is truncated, so I need to infer the entry logic. Based on typical breakout and retest strategies, the entries likely occur when a breakout is confirmed followed by a successful retest back to the breakout level.
+
+Since the full Pine Script isn't provided, I'll reconstruct the probable entry conditions: long positions when support breaks and price returns to test the broken level, and short positions when resistance breaks with a retest back to that level. For the Python implementation, I'll use Wilder's RSI with the standard 14-period lookback and Wilder's ATR calculation to match the Pine Script's approach.
+
+The entry triggers require identifying both the initial breakout and subsequent retest confirmation. In Pine Script, the `retestEvent` function checks for retest conditions using `c1 or c2 or c3 or c4` and tracks when these become true relative to the previous bar. This pattern needs to be replicated in Python to properly detect the entry signal sequence.
+
+Looking at the box drawing logic, support breaks occur when price crosses below the sBox bottom (cu = crossunder), and resistance breaks happen when price crosses above the rBox top (co = crossover). The retest conditions then validate whether the subsequent move back toward the broken level confirms a valid entry. I'll need to implement the pivot detection using fixnan and ta.pivotlow/pivothigh functions to replicate the support and resistance level identification. The function calculates the Vidya adaptive moving average by combining CMO momentum with an exponential weighted average that adjusts alpha based on momentum strength. It then uses multiple indicators—MACD for trend direction, ATR for volatility filtering, and volume-weighted sensitivity thresholds—to generate trading signals based on breakout conditions. The code also appears to be setting up support and resistance levels with customizable styling options.
+
+To convert this to Python, I need to handle the key technical indicators: implementing Wilder RSI for the CMO calculation, calculating ATR using the true range method, and replicating the pivot detection logic for identifying swing highs and lows. The strategy focuses on three main components—detecting breakouts through price action relative to support and resistance boxes, confirming retests when price returns to broken levels, and validating entries within specified trading hours. The implementation requires calculating CMO across configurable periods, deriving Vidya values from the CMO-based adaptive average, and building the complete signal framework for the Python backtester. retest conditions based on price interacting with the box boundaries. For support retests, s1 checks if high reaches the box top while close stays within the box, s2 verifies high exceeds the top with close positioned between the box boundaries, and s3 ensures high stays within the range. Each condition confirms the retest using `retestCondition(sBreak, ...)`.
+
+For resistance retests, r1 looks for low at or below the box bottom with close above, r2 checks when low touches the bottom with close between boundaries, and r3 validates low stays within the range while close exceeds the top. Similar retest confirmation applies.
+
+The `retestEvent` function processes these conditions and appears to handle trade execution, though the logic isn't fully visible yet. Entries likely trigger when one of the four support or resistance conditions fires.
+
+Looking at the structure, the strategy checks breakouts first, then validates retests before committing to a position. I'll need to replicate both the breakout detection and retest validation in the conversion.
+
+For the Python implementation, I need to calculate the key indicators: CMO using Wilder's method, VIDYA from the CMO source, pivot points for support and resistance, MACD and signal lines for momentum, and ATR for volatility. I'll also track volume against the ATR multiplier to identify breakout conditions, then build a loop to evaluate each condition against the price data. // Check if bars meet minimum lookback requirement
+if i < input_lookback + input_retValid:
+    continue
+
+# Detect crossover and crossunder conditions for box boundaries
+co = (df['close'].iloc[i] > rTop.iloc[i]) & (df['close'].iloc[i-1] <= rTop.iloc[i-1])
+cu = (df['close'].iloc[i] < sBot.iloc[i]) & (df['close'].iloc[i-1] >= sBot.iloc[i-1])
+
+# Track support and resistance breakouts
+if cu and pd.isna(sBreak.iloc[i]):
+    sBreak.iloc[i] = True
+elif ta.change(pl).iloc[i] and pd.isna(sBreak.iloc[i]):
+    sBreak.iloc[i] = na
+
+if co and pd.isna(rBreak.iloc[i]):
+    rBreak.iloc[i] = True
+elif ta.change(ph).iloc[i] and pd.isna(rBreak.iloc[i]):
+    rBreak.iloc[i] = na
+
+Now I need to identify the retest conditions. Support retests occur when price returns to test broken levels: the high must reach or exceed the top of the support box while the close stays below or within the range, or the high touches the bottom boundary within the range. Resistance retests follow a similar pattern where the low dips to the bottom of the resistance box while the close holds above or inside the boundaries.
+
+For the retest event function, I need to check if any of the four retest conditions are met, then verify the current bar shows a new retest while the previous bar doesn't. The retest value gets set when this occurs.
+
+However, the logic continues with a conditional that compares y2 against a valuewhen retrieval of y2 at the retest event. This suggests the function is checking whether the current y2 position has moved further in the direction expected for a retest—if y2 is lower than where it was at the last retest event, that indicates a more favorable entry point. retOccurred := na
+array.push(retLabel, label.new(bar_index - retSince, y2[retSince], ...))
+
+This creates a "Potential Retest" label at the point where the retest was detected.
+
+Then the entry logic likely triggers when `retEvent` becomes true. The function returns `retEvent`, which would be used to determine when to execute trades.
+
+For implementation purposes, I'll need to check the direction parameter—if it's set to 'ph' for pivot highs, I'm looking for short positions on resistance breaks with retests. If it's 'pl' for pivot lows, I'm looking for long positions on support breaks with retests.
+
+Looking at the naming conventions, 's' variables handle support (bullish) while 'r' variables handle resistance (bearish). The entry conditions would activate `retestEvent` when the appropriate break and retest patterns align, then use the current bar's close price as the entry point. The `tradeDirection` input filters which entries actually execute—either both directions, only longs, or only shorts.
+
+The challenge is that the Pine Script cuts off mid-function, so I need to infer the complete structure from what's provided. I'll need to carefully reconstruct the logic for handling both support and resistance scenarios, ensuring the breakout detection, retest confirmation, and direction filtering all work together properly. The breakouts trigger labels and mark when sBreak or rBreak becomes true. Entries appear to be managed through `retestEvent`, which handles the actual entry logic when retest conditions are satisfied.
+
+For the Python implementation, I need to set up the key parameters like ATR length at 14 and the multiplier for stop loss calculations.
+
+I'll calculate CMO using Wilder's RSI approach, derive VIDYA from the CMO source, identify pivot points for support and resistance levels, and then build MACD and signal lines along with ATR for volatility measurement.
+
+For the breakout detection, I'm checking when price crosses below the support box bottom or above the resistance box top, tracking whether these breaks have occurred. The retest conditions then evaluate whether price re-tests the broken levels after the initial break.
+
+When a support break is confirmed, I verify the retest by checking if price returns to the broken support zone under various conditions—either bouncing from above into the range, closing back below the support line, or failing to sustain above it. The short entry triggers when the high reaches the top of the broken support box and price closes below it.
+
+For resistance, the logic mirrors this: when price breaks above resistance, a retest occurs if the low touches the bottom of the resistance box while price closes above it, or if price fails to hold below the top. The long entry condition requires the low to reach the bottom of the broken resistance and price to close above it. The code appears incomplete, so I'll focus on implementing the core breakout and retest logic for entries. I'll need to handle both long and short scenarios based on these conditions, then populate the entry signals with the required fields like timestamp, price, and direction. The function should return a list of entry dictionaries that include all the necessary trade information. _since.iloc[i] <= input_ret_valid and
+           high >= s_bot.iloc[i] and high <= s_top.iloc[i])
+
+For resistance boxes, I'm checking similar conditions. The retest occurs when the breakout happened enough bars ago, then price approaches the resistance level from below. The first condition requires the low to reach the bottom boundary while price closes above the top. The second condition has the low touching the bottom while price remains between the two boundaries, and the third checks if the low sits within the box range itself.
+
+Looking at the `retestEvent` function implementation, it activates when `retActive` transitions from false to true, meaning one of these conditions becomes newly true. It then retrieves the current bar's y1 value to use for the retest label placement.
+
+When `pType == 'ph'`, it checks if y2 has dropped below the retest bar's y2 value—if so, it marks the event as active since a new retest is occurring. The function then recalculates retValue using `ta.valuewhen` to capture the y1 value at the most recent retest. It determines how many bars have passed since that event, creates a label at the historical y2 position with text indicating the retest type, and manages an array of labels to prevent clutter—keeping only the most recent two labels while deleting older ones. The function finally returns the `retEvent` boolean.
+
+The actual strategy logic likely filters entries based on `tradeDirection`, checking for support and resistance retest conditions through the `retestEvent` function, then executing long or short positions accordingly when the conditions align with the configured direction setting. The entry logic appears to follow a pattern where longs trigger on support retests (sBreak confirmed, then s1-s4 conditions met) and shorts trigger on resistance retests (rBreak confirmed, then r1-r4 conditions met). Since the code cuts off before the complete strategy execution block, I'm inferring the entry conditions from the overall structure and the retest event function parameters.
+
+Looking at how retestEvent is invoked with parameters for each scenario—support boxes (sTop, sBot, 'pl'), resistance boxes (rTop, rBot, 'ph'), and the retest conditions—it seems the function handles both entry directions. The short position entry would depend on rBreak being true while the support-level retest conditions align, and the long position would trigger when the resistance-level retests confirm. I need to implement the strategy logic with both long and short entries. Long entries trigger when support breaks and a retest occurs, checking the direction parameter and adding a long position when conditions align. Short entries follow a similar pattern for resistance breaks with retest conditions, opening short positions based on the trade direction setting. d: 'short',
+                'entry_ts': int(df['time'].iloc[i]),
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                'entry_price_guess': float(df['close'].iloc[i]),
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': float(df['close'].iloc[i]),
+                'raw_price_b': float(df['close'].iloc[i])
+            })
+            trade_num += 1
+
+The code tracks support and resistance breakouts, then checks for retests at those levels. When a support retest is detected (price bouncing from the broken level), it triggers a long entry. Similarly, a resistance retest (price rejecting from the broken resistance) generates a short entry. Each trade captures the timestamp, entry price, and initializes exit fields to zero. price is below bottom (retest from above)
+- s2: price closes between bottom and top (retest from above)
+- s3: price reaches between bottom and top (retest from within range)
+- s4: price reaches between bottom and top but closes below bottom (retest from within range)
+
+Short Entry (rBreak):
+- r1: price crosses above and closes above top
+- r2: price crosses above and closes between bottom and top
+- r3: price reaches between bottom and top and closes above
+- r4: price reaches between bottom and top and closes above top (retest from below)
+
+So the logic makes sense: s1-s4 are bullish retests after support breaks, and r1-r4 are bearish retests after resistance breaks.
+
+For the Python implementation, I need to be careful about:
+1. Bar indexing (Pine uses current bar, Python with pandas needs proper indexing)
+2. The `ta.change` function which in this context checks if the pivot has changed
+3. Proper handling of the breakout detection
+4. Implementing the retest event logic correctly
+
+The `ta.change(pl)` checks if the pivot low has changed since the last bar, which is used to determine when to clear the breakout flag. Similarly, `ta.change(ph)` handles the same logic for pivot highs.
+
+Now I need to focus on the actual entry logic. The strategy likely checks for breakout confirmation first, then validates retests before placing entries. I'll need to track the breakout state and check conditions within the valid lookback window. if low reaches bottom and price closes above top (retest from below)
+
+For the entry logic, a long triggers when price breaks below a support level and then price bounces back up to test that level again. A short triggers when price breaks above resistance and then price moves down to retest that level. The function returns both conditions as separate signals, allowing the strategy to handle both long and short entries independently.
+
+However, looking at the retestEvent implementation more carefully, the logic seems to include additional conditions that I'm not fully capturing. The function appears to check if certain conditions are met and then potentially modify the retest event based on comparing values, which might affect how the entry signals are generated. The label is placed at y2 with text indicating a potential retest. The code maintains an array of up to 2 labels, deleting older ones when the limit is exceeded.
+
+For entry logic, a long position triggers when sBreak is true and s1 through s4 conditions align. A short entry requires rBreak to be true along with corresponding r1 through r4 conditions. The retest event captures the y1 value from the bar where the retest first occurs.
+
+The logic structure checks if any retest condition becomes newly active, then validates it against prior conditions. For support retests in an uptrend, the logic seems to check whether a lower low forms compared to the previous retest point. The implementation also filters based on trade direction, allowing for long-only, short-only, or both directional setups. Looking at the conditions for the long entry, I need to check if the high price reaches the bottom of the support box while the close price stays below it. The retest conditions are checking if price action has returned to the broken support level. I'm also tracking when the support breaks and how many bars have passed since that breakout occurred.
+
+For the short entry logic, I'm examining whether price fails to sustain above the resistance level—checking if the close drops back below the top of the resistance box after testing it.
+
+The structure uses boolean series to track breakout states for both support and resistance levels. When a support breakout occurs (close crosses below the box bottom), it sets a flag. Similarly, a resistance breakout triggers when close crosses above the box top. These flags are cleared whenever the pivot points change, ensuring the breakout state only persists until the next significant price movement. A crossunder detects when the close price drops below the sBot level, checking the current bar against the previous one. A crossover identifies when the close price rises above the rTop level with the same comparison method.
+
+The breakout logic tracks support and resistance levels separately—when a crossunder occurs below the bottom of the range, it marks sBreak as true, and when a crossover happens above the top, it marks rBreak as true. These flags are reset whenever the pivot points change, ensuring the system only responds to fresh breakouts rather than repeated violations of the same level.
+
+For the retest conditions on support breaks, the function checks if price has returned to the broken level. The first condition requires the high to reach the top of the range while the close stays below the bottom, confirming a failed recovery. The second condition adds a middle range where the close also remains below the top, capturing a partial bounce that doesn't fully reclaim the level.
+
+The third condition looks for price that stays within the range boundaries—neither reaching the top nor falling below the bottom—suggesting consolidation after the initial break. The fourth condition checks if price reaches the bottom boundary while staying within the range, but closes below it, indicating the retest has failed and momentum continues downward.
+
+For resistance breaks, the logic mirrors but inverts the direction. The first condition requires the low to touch the bottom of the range while the close holds above the top, confirming the break rejected from below. The second condition adds a middle range where the close also remains above the bottom, capturing a partial decline that doesn't fully reclaim the level.
+
+The third condition mirrors s3 by ensuring the low stays between the range boundaries. The fourth condition inverts r4 to check if the low reaches the top while remaining within the range and price closes above it, indicating the retest succeeded and momentum continues upward.
+
+For the retest event logic, I need to check if any of the four conditions become newly active rather than simply returning a boolean series. The entry logic should then trigger when a retest condition is satisfied. However, there's a subtlety in the Pine Script's conditional logic that affects how these signals are evaluated. _since, y2[ret_since], ...)
+
+This creates a label at the retest location and returns retEvent as a boolean. I can simplify this by directly checking if any condition is met and it's a new occurrence.
+
+For entries, I need to track both support and resistance breakouts separately, checking if either sBreak or rBreak has occurred in the current bar. When a support breakout happens, I'll evaluate the four potential entry conditions. For resistance breakouts, I'll check a different set of conditions. The trade direction filter determines whether I'm considering long entries, short entries, or both.
+
+I also need to ensure the data has sufficient lookback—the strategy requires at least 60 bars to compute all indicators reliably. Additionally, the strategy only trades between specific hours (7 AM to 6 PM UTC), so I'll need to filter entries based on the current bar's timestamp to respect these trading windows. df['hour'] = df['time'].apply(lambda x: datetime.fromtimestamp(x, tz=timezone.utc).hour)
+
+    # Initialize breakout tracking
+    s_break = pd.Series(False, index=df.index)
+    r_break = pd.Series(False, index=df.index)
+    
+    # Calculate pivots
+    pl = fixnan(pd.Series(np.where(pivots == 1, df['low'].values, np.nan)).ffill())
+    ph = fixnan(pd.Series(np.where(pivots == -1, df['high'].values, np.nan)).ffill())
+    
+    # Detect breakouts by checking when price crosses the pivot levels
+    s_break = (df['close'] < pl) & (df['close'].shift() >= pl)
+    r_break = (df['close'] > ph) & (df['close'].shift() <= ph)
+
+Then I'll identify retest conditions by comparing current prices against the pivot levels and their prior values. For support retests, I need to check if price approaches the pivot low after a breakout, using parameters like the number of bars to look back and the tolerance for how close price can get to the level. s_break.shift(1).fillna(False)
+    
+    for i in range(len(df)):
+        if i < 60:
+            continue
+        
+        hour = df['hour'].iloc[i]
+        if hour < 7 or hour >= 18:
+            continue
+        
+        s_break_active = s_break.iloc[i]
+        r_break_active = r_break.iloc[i]
+        
+        if s_break_active and s_retest1.iloc[i]:
+            if trade_direction in ['Long', 'Both']:
+                entries.append({
+                    'trade_num': trade_num,
+                    'direction': 'long',
+                    'entry_ts': int(df['time'].iloc[i]),
+                    'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                    'entry_price': float(df['close'].iloc[i]),
+                    'exit_ts': 0,
+                    'exit_time': '',
+                    'exit_price': 0.0
+                })
+                trade_num += 1
+        
+        if r_break_active and r_retest1.iloc[i]:
+            if trade_direction in ['Short', 'Both']:
+                entries.append({
+                    'trade_num': trade_num,
+                    'direction': 'short',
+                    'entry_ts': int(df['time'].iloc[i]),
+                    'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                    'entry_price': float(df['close'].iloc[i]),
+                    'exit_ts': 0,
+                    'exit_time': '',
+                    'exit_price': 0.0
+                })
+                trade_num += 1
+    
+    return entries
+
+I need to implement helper functions for fixnan and pivot detection since they're not standard pandas operations. For fixnan, I'll forward fill the last valid value to replace NaNs. For pivot detection, I'll need to identify local extrema using rolling windows to find swing highs and lows. pd.Series(np.where(rolling_low_idx == window, df['low'].values, np.nan)).ffill().bfill()
+
+ph_indices = rolling_high(window)
+ph = pd.Series(np.where(rolling_high_idx == window, df['high'].values, np.nan)).ffill().bfill()
+
+For the box boundaries, I need to calculate the y-axis locations for support and resistance. The support y-coordinate uses a ternary operator to select between the lower values of the window, while the resistance y-coordinate does the same for the higher values. In pandas, this becomes a conditional that checks the relationship between consecutive bars within the lookback period.
+
+s_y_loc = np.where(df['low'].iloc[bb - 1] > df['low'].iloc[bb + 1], df['low'].iloc[bb + 1], df['low'].iloc[bb - 1])
+r_y_loc = np.where(df['high'].iloc[bb - 1] > df['high'].iloc[bb + 1], df['high'].iloc[bb - 1], df['high'].iloc[bb + 1])
+
+Now I need to implement the fixnan function. The Pine Script version uses `fixnan` which forward-fills NaN values, and I should replicate that behavior in Python using pandas' ffill method.
+
+For pivot point calculations, I'm computing rolling minimums and maximums over a window to identify local extremes. The support level is determined by finding the minimum low within the lookback window, while resistance uses the maximum high over the same period.
+
+However, there's a discrepancy with how Pine Script handles the offset indexing. In Pine Script, `low[bb + 1]` references a bar that's `bb + 1` bars back from the current bar, but my numpy implementation is pulling from a specific index position relative to the dataframe, not relative to the current bar. This means I'm not correctly replicating the time-based indexing that Pine Script uses.
+
+I need to restructure the approach to properly account for the bar offset. The key issue is that when computing pivots at bar i, I should be looking `bb` bars back and `bb` bars forward from that position, not using fixed indices. This requires shifting the low values by the lookback parameter to align with the current bar's perspective. 1]) > low[i - bb - 1] ? low[i - bb - 1] : low[i - bb + 1]
+    r_y_loc = high[i - bb + 1] > high[i - bb - 1] ? high[i - bb + 1] : high[i - bb - 1]
+
+    pl = ta.pivotlow(low, bb, bb)
+    ph = ta.pivothigh(high, bb, bb)
+
+For the pivot calculations, I need to shift the low values by `bb` positions to get the correct bar reference. When `i = bb`, the shifted low at position 0 represents the low from `bb` bars back, which is what Pine Script accesses with `low[bb]`. The rolling window then captures the range from `low[bb]` through `low[2*bb]` for the pivotlow calculation. 1 - 1], etc.
+
+At i = bb, pl[bb] = min of indices 0 to 20, which corresponds to low[bb - 20] to low[bb] = low[0] to low[20].
+Actually, the window should be [i - bb - 20, i - bb] = [0, 20], so min of indices 0 to 20 = min of low[0] to low[20]. ✓
+
+For the center calculation at i = bb, I need the middle index i - bb = 0, which represents low[bb - bb] = low[0]. The window extends back 20 bars from there.
+
+For the pivot high at i = 20, ph[20] uses high[0] as the center point with a window of [0, 40] spanning indices 0 to 40, which maps to high[20 - 20] through high[20 + 20]. The center calculation i - bb gives 0, representing high[20 - 20] = high[0].
+
+Now checking s_y_loc, at i = bb (where bb = 20), it compares low[bb - 1] = low[19] against low[bb + 1] = low[21]. The previous bar is low[bb - 1] and the next is low[bb + 1], where high[bb - 1] references high[19].
+
+In Python, this becomes: s_y_loc = df['low'].iloc[bb - 1] > df['low'].iloc[bb + 1] ? df['low'].iloc[bb + 1] : df['low'].iloc[bb - 1], and r_y_loc = df['high'].iloc[bb - 1] > df['high'].iloc[bb + 1] ? df['high'].iloc[bb - 1] : df['high'].iloc[bb + 1].
+
+Since these are fixed values based on bar offsets from the current bar, they remain constant throughout iteration. I should compute them once before the loop rather than recalculating each time. The box boundaries are defined at specific bar positions: sTop comes from pl[bb], sBot from s_y_loc, rTop from r_y_loc, and rBot from ph[bb].
+
+The box gets drawn when pl changes, so I need to track when pl values transition. For entries, the key conditions are detecting crossovers and crossunders relative to the box boundaries, then identifying retests based on whether price respects support or resistance levels after the initial break.
+
+A retest occurs when price approaches the box boundary after a breakout, checking conditions like whether price bounced back toward the broken level and if the current bar's price action confirms the retest pattern. The logic filters for bars meeting minimum age requirements and validates that the retest conditions align with the detected breakout direction. For the 'pl' type (support retest), the condition checks if y2 exceeds the previous retest's y2 value. Since sTop > sBot for an uptrend, y2 being greater signals a new low, meaning price has moved lower than the prior retest—which aligns with a bullish breakdown. The logic appears sound.
+
+However, looking at the condition more carefully, when pType equals 'ph' (resistance retest), it checks if y2 is less than the last retest value, suggesting price made a lower high. This creates a discrepancy with the 'pl' case, which should also detect lower support levels but seems to be checking the opposite direction.
+
+The most straightforward approach is to focus on the core retest logic: triggering when any of the four retest conditions are met and hasn't been active recently. I'll implement the basic retest detection and note that the full condition logic appears incomplete in the provided code.
+
+For the implementation, I need to check if the retest is new by comparing the current state to the previous bar's state. The function should return True only when a retest condition activates for the first time. Then I can build the entry logic to check for valid setups based on the trade direction. elif s_break.iloc[i-1] and s4.iloc[i]:
+                trigger = True
+        elif s_break.iloc[i-1] and s1.iloc[i]:
+            trigger = True
+    elif s_break.iloc[i-1] and s3.iloc[i]:
+        trigger = True
+
+For short entries, I'm checking if rBreak was active on the previous bar and r1 is true on the current bar, or if rBreak was true and r2, r4, or r3 conditions are met. When any of these patterns occur and the trade direction allows shorts, I record a short entry with the current timestamp and price.
+
+The raw price fields capture the closing price as both raw_price_a and raw_price_b, incrementing the trade counter for each new signal.
+
+Now I need to implement helper functions for pivot detection. The pivot low function uses a rolling window to find local minima where the center point is lower than all surrounding points in the window. Similarly, pivot high finds local maxima using a rolling maximum with the same window logic. I also need a fixnan function that forward-fills NaN values.
+
+For the box boundaries, I'm calculating s_y_loc by comparing the low values at specific indices around the pivot point—specifically at bb-1 and bb+1—to determine the support level. The high values follow the same pattern for the resistance level.
+
+For the MACD calculation, I'm computing the difference between two exponential moving averages of the close prices using different spans (20 and 40), then smoothing the result with another EMA. The signal line is an EMA of the MACD values themselves. The explosion line threshold is derived by multiplying the ATR by 150 and subtracting a sensitivity factor scaled by volume. I also need to filter entries to only those occurring during trading hours (7 AM to 6 PM). df['hour'] = df['time'].apply(lambda x: datetime.fromtimestamp(x, tz=timezone.utc).hour)
+    
+    # Initialize breakout flags
+    s_break = pd.Series(False, index=df.index)
+    r_break = pd.Series(False, index=df.index)
+    
+    # Box boundaries at fixed positions
+    s_bot = s_y_loc
+    s_top = pl.iloc[bb] if bb < len(pl) else df['low'].iloc[bb]
+    r_top = r_y_loc
+    r_bot = ph.iloc[bb] if bb < len(ph) else df['high'].iloc[bb]
+    
+    # Detect crossovers and crossunders relative to box levels
+    cu = (df['close'].iloc[1:] < s_bot) & (df['close'].iloc[:-1] >= s_bot)
+    cu = pd.concat([pd.Series(False, index=[0]), cu]).reset_index(drop=True)
+    
+    co = (df['close'].iloc[1:] > r_top) & (df['close'].iloc[:-1] <= r_top)
+    co = pd.concat([pd.Series(False, index=[0]), co]).reset_index(drop=True)
+    
+    # Identify retest patterns for support and resistance levels
+    s1 = s_break.shift(input_ret_since + 1).fillna(False) & (df['high'] >= s_top) & (df['close'] <= s_bot)
+    s2 = s_break.shift(input_ret_since + 1).fillna(False) & (df['high'] >= s_top) & (df['close'] >= s_bot) & (df['close'] <= s_top)
+    s3 = s_break.shift(input_ret_since + 1).fillna(False) & (df['high'] >= s_bot) & (df['high'] <= s_top)
+    s4 = s_break.shift(input_ret_since + 1).fillna(False) & (df['high'] >= s_bot) & (df['high'] <= s_top) & (df['close'] < s_bot)
+    
+    r1 = r_break.shift(input_ret_since + 1).fillna(False) & (df['low'] <= r_bot) & (df['close'] >= r_top)
+    r2 = r_break.shift(input_ret_since + 1).fillna(False) & (df['low'] <= r_bot) & (df['close'] <= r_top) & (df['close'] >= r_bot)
+    r3 = r_break.shift(input_ret_since + 1).fillna(False) & (df['low'] <= r_top) & (df['low'] >= r_bot)
+    r4 = r_break.shift(input_ret_since + 1).fillna(False) & (df['low'] <= r_top) & (df['low'] >= r_bot) & (df['close'] > r_top)
+
+I need to implement the helper functions that Pine Script uses. `fixnan` forward-fills NaN values, while `pivotlow` and `pivothigh` identify local extrema by checking if the current bar's low or high is lower or higher than surrounding bars within the lookback window.
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    def fixnan(series):
+        return series.ffill().bfill()
+    
+    def pivotlow(low, length):
+        shifted = low.shift(length)
+        result = low[(low == shifted.rolling(length * 2 + 1, center=True).min()) & (shifted.notna())]
+        return fixnan(result)
+    
+    def pivothigh(high, length):
+        shifted = high.shift(length)
+        result = high[(high == shifted.rolling(length * 2 + 1, center=True).max()) & (shifted.notna())]
+        return fixnan(result)
+    
+    entries = []
+    trade_num = 1
+    trade_direction = 'Both'
+    atr_length = 14
+    atr_multiplier = 1.5
+    take_profit_ratio = 1.5
+    length_cmo = 14
+    alpha = 0.2
+    cmo_buy_level = -50
+    cmo_sell_level = 50
+    input_lookback = 20
+    input_ret_since = 2
+    input_ret_valid = 2
+    
+    if len(df) < 60:
+        return entries
+    
+    pl = fixnan(pivotlow(df['low'], input_lookback))
+    ph = fixnan(pivothigh(df['high'], input_lookback))
+    
+    bb = input_lookback
+    
+    # s_y_loc and r_y_loc are calculated at bar bb
+    s_y_loc = df['low'].iloc[bb - 1] if df['low'].iloc[bb - 1] > df['low'].iloc[bb + 1] else df['low'].iloc[bb + 1]
+    r_y_loc = df['high'].iloc[bb - 1] if df['high'].iloc[bb - 1] > df['high'].iloc[bb + 1] else df['high'].iloc[bb + 1]
+    
+    s_bot = s_y_loc
+    s_top = pl.iloc[bb] if bb < len(pl) else df['low'].iloc[bb]
+    r_top = r_y_loc
+    r_bot = ph.iloc[bb] if bb < len(ph) else df['high'].iloc[bb]
+    
+    df['hour'] = df['time'].apply(lambda x: datetime.fromtimestamp(x, tz=timezone.utc).hour)
+    
+    s_break = pd.Series(False, index=df.index)
+    r_break = pd

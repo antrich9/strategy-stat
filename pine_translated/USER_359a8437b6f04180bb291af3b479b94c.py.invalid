@@ -1,0 +1,18 @@
+from datetime import datetime, timezone
+import pytz  # if available
+
+def is_in_trading_window(ts):
+    dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+    hour = dt.hour
+    minute = dt.minute
+    total_minutes = hour * 60 + minute
+    
+    # Window 1: 07:00-07:45 (420-465 minutes)
+    # Window 2: 14:00-14:45 (840-885 minutes)
+    window1_start = 7 * 60      # 420
+    window1_end = 7 * 60 + 45   # 465
+    window2_start = 14 * 60     # 840
+    window2_end = 14 * 60 + 45  # 885
+    
+    current = hour * 60 + minute
+    return (window1_start <= current < window1_end) or (window2_start <= current < window2_end)

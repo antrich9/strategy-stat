@@ -1,0 +1,3 @@
+window = 2*PP+1
+high_rolling = df['high'].rolling(window, center=True).max()
+pivot_high_mask = df['high'] == high_rolling

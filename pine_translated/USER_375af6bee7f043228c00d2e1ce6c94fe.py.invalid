@@ -1,0 +1,3 @@
+window = 2*PP + 1
+df['high_pivot'] = df['high'].rolling(window, center=True).max()
+df['is_pivot_high'] = df['high'] == df['high_pivot']

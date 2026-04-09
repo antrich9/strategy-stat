@@ -1,0 +1,4 @@
+obUp = isObUp(1) = isDown(2) and isUp(1) and close[1] > high[2]
+obDown = isObDown(1) = isUp(2) and isDown(1) and close[1] < low[2]
+fvgUp = isFvgUp(0) = low[0] > high[2]
+fvgDown = isFvgDown(0) = high[0] < low[2]

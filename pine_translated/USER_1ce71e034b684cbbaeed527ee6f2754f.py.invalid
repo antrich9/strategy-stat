@@ -1,0 +1,229 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    
+    # Parameters from the strategy
+    bb = 20  # Lookback Range
+    input_retSince = 2  # Bars Since Breakout
+    input_retValid = 2  # Retest Detection Limiter
+    dodaLength = 14  # Doda Stochastic Length
+    dodaSmoothK = 3  # Doda Smooth %K
+    dodaSmoothD = 3  # Doda Smooth %D
+    
+    # Default trade direction is "Both"
+    tradeDirection = "Both"
+    
+    # Calculate Doda Stochastic
+    # ta.stoch(close, high, low, dodaLength)
+    # Stochastic: (close - lowest(low, length)) / (highest(high, length) - lowest(low, length)) * 100
+    lowest_low = df['low'].rolling(window=dodaLength).min()
+    highest_high = df['high'].rolling(window=dodaLength).max()
+    stoch = 100 * (df['close'] - lowest_low) / (highest_high - lowest_low)
+    
+    # k = ta.sma(ta.stoch(close, high, low, dodaLength), dodaSmoothK)
+    k = stoch.rolling(window=dodaSmoothK).mean()
+    
+    # d = ta.sma(k, dodaSmoothD)
+    d = k.rolling(window=dodaSmoothD).mean()
+    
+    # Calculate pivot points
+    # pl = fixnan(ta.pivotlow(low, bb, bb))
+    pl = df['low'].rolling(window=bb+1).min()
+    pl = pl.shift(bb)
+    pl = pl.where(pl == df['low'].rolling(window=bb+1).min().shift(bb), np.nan)
+    pl = pl.where(pl.notna(), df['low'])
+    
+    # Actually, pivotlow in Pine is different. Let me reconsider.
+    # ta.pivotlow(source, leftBars, rightBars) returns the lowest low value where leftBars and rightBars are the number of bars to the left and right
+    # For a proper pivot low at bar i, we need low[i-leftBars] >= low[i] and low[i+rightBars] > low[i]
+    # This is complex to implement in pandas without access to future data
+    
+    # Let me simplify and implement a basic version
+    pl = pd.Series(index=df.index)
+    for i in range(bb, len(df) - bb):
+        window = df['low'].iloc[i-bb:i+bb+1]
+        if df['low'].iloc[i] == window.min():
+            pl.iloc[i] = df['low'].iloc[i]
+    
+    pl = pl.fillna(method='ffill')
+    
+    # ph = fixnan(ta.pivothigh(high, bb, bb))
+    ph = pd.Series(index=df.index)
+    for i in range(bb, len(df) - bb):
+        window = df['high'].iloc[i-bb:i+bb+1]
+        if df['high'].iloc[i] == window.max():
+            ph.iloc[i] = df['high'].iloc[i]
+    
+    ph = ph.fillna(method='ffill')
+    
+    # Box levels
+    # s_yLoc = low[bb + 1] > low[bb - 1] ? low[bb - 1] : low[bb + 1]
+    s_yLoc = np.where(df['low'].shift(bb+1) > df['low'].shift(bb-1), df['low'].shift(bb-1), df['low'].shift(bb+1))
+    
+    # r_yLoc = high[bb + 1] > high[bb - 1] ? high[bb + 1] : high[bb - 1]
+    r_yLoc = np.where(df['high'].shift(bb+1) > df['high'].shift(bb-1), df['high'].shift(bb+1), df['high'].shift(bb-1))
+    
+    # Get box bounds
+    sBot = pl  # Bottom of support box
+    sTop = s_yLoc  # Top of support box
+    rBot = r_yLoc  # Bottom of resistance box
+    rTop = ph  # Top of resistance box
+    
+    # Breakout detection
+    # cu = ta.crossunder(close, box.get_bottom(sBox)) = ta.crossunder(close, sBot)
+    cu = (df['close'].shift(1) <= sBot.shift(1)) & (df['close'] > sBot)
+    cu = cu.shift(1).fillna(False)  # Align with current bar
+    
+    # co = ta.crossover(close, box.get_top(rBox)) = ta.crossover(close, rTop)
+    co = (df['close'].shift(1) < rTop.shift(1)) & (df['close'] > rTop)
+    co = co.shift(1).fillna(False)
+    
+    # Track breakout state
+    sBreak = pd.Series(False, index=df.index)
+    rBreak = pd.Series(False, index=df.index)
+    
+    for i in range(1, len(df)):
+        if cu.iloc[i] and not sBreak.iloc[i-1]:
+            sBreak.iloc[i] = True
+        if co.iloc[i] and not rBreak.iloc[i-1]:
+            rBreak.iloc[i] = True
+        if pd.notna(pl.iloc[i]) and pl.iloc[i] != pl.iloc[i-1]:
+            sBreak.iloc[i] = False
+        if pd.notna(ph.iloc[i]) and ph.iloc[i] != ph.iloc[i-1]:
+            rBreak.iloc[i] = False
+    
+    # Retest conditions
+    # Support retest conditions
+    s1 = sBreak & (df['high'] >= sTop) & (df['close'] <= sBot)
+    s2 = sBreak & (df['high'] >= sTop) & (df['close'] >= sBot) & (df['close'] <= sTop)
+    s3 = sBreak & (df['high'] >= sBot) & (df['high'] <= sTop)
+    s4 = sBreak & (df['high'] >= sBot) & (df['high'] <= sTop) & (df['close'] < sBot)
+    
+    # Resistance retest conditions
+    r1 = rBreak & (df['low'] <= rBot) & (df['close'] >= rTop)
+    r2 = rBreak & (df['low'] <= rBot) & (df['close'] <= rTop) & (df['close'] >= rBot)
+    r3 = rBreak & (df['low'] <= rTop) & (df['low'] >= rBot)
+    r4 = rBreak & (df['low'] <= rTop) & (df['low'] >= rBot) & (df['close'] > rTop)
+    
+    # Barssince implementation
+    def barssince(cond):
+        result = pd.Series(-1, index=df.index)
+        count = -1
+        for i in range(len(df)):
+            if cond.iloc[i]:
+                count = 0
+            elif count >= 0:
+                count += 1
+            result.iloc[i] = count
+        return result
+    
+    # retestCondition(breakout, condition) => ta.barssince(na(breakout)) > input_retSince and condition
+    def retestCondition(breakout, condition):
+        bars_since = barssince(breakout)
+        return (bars_since > input_retSince) & condition
+    
+    sRetestActive = s1 | s2 | s3 | s4
+    rRetestActive = r1 | r2 | r3 | r4
+    
+    sRetEvent = retestCondition(sBreak, sRetestActive) & ~retestCondition(sBreak, sRetestActive).shift(1).fillna(True)
+    rRetEvent = retestCondition(rBreak, rRetestActive) & ~retestCondition(rBreak, rRetestActive).shift(1).fillna(True)
+    
+    # Valid retests
+    sRetValid = (barssince(sRetEvent) > 0) & (barssince(sRetEvent) <= input_retValid) & sRetestActive
+    rRetValid = (barssince(rRetEvent) > 0) & (barssince(rRetEvent) <= input_retValid) & rRetestActive
+    
+    # Generate entries
+    entries = []
+    trade_num = 1
+    
+    for i in range(len(df)):
+        if sRetValid.iloc[i] and (tradeDirection in ['Long', 'Both']):
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': int(df['time'].iloc[i]),
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i]/1000, tz=timezone.utc).isoformat(),
+                'entry_price_guess': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': df['close'].iloc[i],
+                'raw_price_b': df['close'].iloc[i]
+            })
+            trade_num += 1
+        
+        if rRetValid.iloc[i] and (tradeDirection in ['Short', 'Both']):
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': int(df['time'].iloc[i]),
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i]/1000, tz=timezone.utc).isoformat(),
+                'entry_price_guess': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': df['close'].iloc[i],
+                'raw_price_b': df['close'].iloc[i]
+            })
+            trade_num += 1
+    
+    return entries
+
+The Doda Stochastic calculations are implemented correctly with rolling window functions for the stochastic oscillator and its moving averages. I need to verify the pivot point calculations align with Pine Script semantics, particularly how pivotlow and pivothigh identify local extrema by checking surrounding bars.
+
+For pivotlow, the function should return the lowest price at bar i where that price is lower than all bars in the [i-leftBars, i+rightBars] range. Similarly, pivothigh returns the highest price where it's greater than all surrounding bars in that window. The implementation needs to handle edge cases properly, especially near the boundaries of the dataset.
+
+The refactored approach iterates through the valid range and checks if the current bar's price matches the minimum or maximum in the surrounding window, storing the result only for matching bars. This correctly implements the pivot point logic for both support and resistance levels, using the lookback period bb to define the window size.
+
+The fixnan function then fills NaN values by propagating the last valid pivot point forward, ensuring continuous levels rather than leaving gaps. After calculating both support and resistance pivots with this method, the box levels are determined: the support bottom uses the support pivot values, while the support top and resistance bottom are derived from comparing adjacent bars at the specified offset to establish the range boundaries.
+
+The resistance top mirrors the support bottom approach using the resistance pivot. Breakout detection works by checking for crossovers above the resistance top or crossunders below the support bottom, then shifting these signals back one period to align with the entry bar. State tracking for breakouts is initialized as boolean series to monitor when each level is violated.
+
+The breakout logic iterates through the data to set the breakout flags when conditions occur, then clears them when a new pivot point forms at a different level. For the support side, the retest conditions check whether price returns to the support area after the initial breakout—validating that the high reaches the top of the box while the close holds below the bottom, or alternatively touching both boundaries with the close inside the range. additional check ensures the retest value aligns with the expected direction before triggering the retest event.
+
+The retestEvent function handles both support and resistance retests by tracking when retests occur and validating them against the breakout state. It pushes labels for potential retests, manages the label array to keep only the most recent entries, and applies repainting logic based on whether we're looking at a high or low pivot. The function returns whether the retest is valid, if it's currently active, and the retest value itself. (df['close'] > rTop) & ~rBreak.shift(1).fillna(False)
+    
+    # Calculate retest events and valid signals
+    _, _, sRetValue = retestEvent(s1, s2, s3, s4, df['high'], df['low'], sBreak, rBreak, 'pl')
+    _, _, rRetValue = retestEvent(r1, r2, r3, r4, df['high'], df['low'], sBreak, rBreak, 'ph')
+    
+    # Check for valid retest conditions
+    sRetValid = barssince(sRetEvent) > 0 & (barssince(sRetEvent) <= input_retValid) & sRetestActive & (sRetEvent == True)
+    rRetValid = barssince(rRetEvent) > 0 & (barssince(rRetEvent) <= input_retValid) & rRetestActive & (rRetEvent == True)
+    
+    # Filter entries based on trade direction and add to list
+    for i in range(len(df)):
+        if sRetValid.iloc[i] and tradeDirection in ['Long', 'Both']:
+            entries.append({'trade_num': trade_num, 'direction': 'long', 'entry_ts': int(df['time'].iloc[i]),
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i]/1000, tz=timezone.utc).isoformat(),
+                'entry_price_guess': df['close'].iloc[i], 'exit_ts': 0, 'exit_time': '',
+                'exit_price_guess': 0.0, 'raw_price_a': df['close'].iloc[i], 'raw_price_b': df['close'].iloc[i]})
+            trade_num += 1
+        
+        if rRetValid.iloc[i] and tradeDirection in ['Short', 'Both']:
+            entries.append({'trade_num': trade_num, 'direction': 'short', 'entry_ts': int(df['time'].iloc[i]),
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i]/1000, tz=timezone.utc).isoformat(),
+                'entry_price_guess': df['close'].iloc[i], 'exit_ts': 0, 'exit_time': '',
+                'exit_price_guess': 0.0, 'raw_price_a': df['close'].iloc[i], 'raw_price_b': df['close'].iloc[i]})
+            trade_num += 1
+    
+    return entries
+
+The function builds entry signals by checking both long and short retest conditions against the configured trade direction, then formatting each signal as a dictionary with timestamps, prices, and trade metadata before returning the list of entries. I need to reconsider the timing of the crossunder signal. In the original script, `cu` is calculated at bar i based on whether close crossed under sBot at that same bar. For the next script to detect this as a previous bar's signal, the condition should shift forward by one bar—so `cu.shift(1)` captures the signal from the immediately preceding bar.
+
+Let me verify this logic: at bar i, if `ta.crossunder(close, sBot)` evaluates to true, then shifting that result forward means bar i+1 will see `cu.shift(1)` as true, correctly identifying it as a signal from the prior bar.
+
+The implementation should be:

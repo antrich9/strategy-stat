@@ -1,0 +1,138 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    # Strategy parameters
+    donchLength = 20
+    filterType = 'CON FILTRADO DE TENDENCIA'
+    activateElephantCandles = True
+    activateRedElephantCandles = True
+    activateGreenElephantCandles = True
+    minBodyPercentage = 70
+    previousBarsCount = 100
+    searchFactor = 1.3
+    maType = 'SMA'
+    maLength = 20
+    maSource = df['close']
+    maReaction = 1
+    maTypeB = 'SMA'
+    maLengthB = 8
+    maSourceB = df['close']
+    maReactionB = 1
+    bullishTrendCondition = 'DIRECCION MEDIA RAPIDA ALCISTA'
+    bearishTrendCondition = 'DIRECCION MEDIA RAPIDA BAJISTA'
+    operationMode = True
+    
+    close = df['close']
+    open_ = df['open']
+    high = df['high']
+    low = df['low']
+    
+    # ATR Calculation (Wilder)
+    tr = pd.concat([
+        high - low,
+        (high - close.shift(1)).abs(),
+        (low - close.shift(1)).abs()
+    ], axis=1).max(axis=1)
+    atr = tr.rolling(window=previousBarsCount).mean()
+    atr = atr.fillna(method='bfill')
+    
+    # Moving Average variant function
+    def ma_variant(ma_type, src, length):
+        if length <= 0:
+            return pd.Series(np.full(len(src), np.nan), index=src.index)
+        if ma_type == 'SMA' or ma_type == 'TMA':
+            if ma_type == 'TMA':
+                sma1 = src.rolling(length).mean()
+                return sma1.rolling(length).mean()
+            return src.rolling(length).mean()
+        elif ma_type == 'EMA':
+            return src.ewm(span=length, adjust=False).mean()
+        elif ma_type == 'WMA':
+            weights = np.arange(1, length + 1)
+            return src.rolling(length).apply(lambda x: np.dot(x, weights[-len(x):]) / weights[-len(x):].sum() if len(x) == length else np.nan, raw=True)
+        elif ma_type == 'VWMA':
+            return (src * df['volume']).rolling(length).sum() / df['volume'].rolling(length).sum()
+        elif ma_type == 'SMMA':
+            smma = pd.Series(np.zeros(len(src)), index=src.index)
+            smma.iloc[length - 1] = src.iloc[:length].mean()
+            for i in range(length, len(src)):
+                smma.iloc[i] = (smma.iloc[i - 1] * (length - 1) + src.iloc[i]) / length
+            return smma
+        elif ma_type == 'DEMA':
+            ema1 = src.ewm(span=length, adjust=False).mean()
+            ema2 = ema1.ewm(span=length, adjust=False).mean()
+            return 2 * ema1 - ema2
+        elif ma_type == 'TEMA':
+            ema1 = src.ewm(span=length, adjust=False).mean()
+            ema2 = ema1.ewm(span=length, adjust=False).mean()
+            ema3 = ema2.ewm(span=length, adjust=False).mean()
+            return 3 * (ema1 - ema2) + ema3
+        elif ma_type == 'HullMA':
+            half_len = int(length / 2)
+            wma1 = pd.Series(np.zeros(len(src)), index=src.index)
+            wma2 = pd.Series(np.zeros(len(src)), index=src.index)
+            for i in range(half_len, len(src)):
+                w1 = src.iloc[i - half_len + 1:i + 1]
+                w2 = src.iloc[i - length + 1:i + 1]
+                if len(w1) == half_len:
+                    wts1 = np.arange(1, half_len + 1)
+                    wma1.iloc[i] = np.dot(w1.values, wts1) / wts1.sum()
+                if len(w2) == length:
+                    wts2 = np.arange(1, length + 1)
+                    wma2.iloc[i] = np.dot(w2.values, wts2) / wts2.sum()
+            hull_diff = wma1 - wma2
+            sqrt_len = max(1, int(np.sqrt(length)))
+            hull = pd.Series(np.zeros(len(src)), index=src.index)
+            for i in range(sqrt_len, len(src)):
+                h = hull_diff.iloc[i - sqrt_len + 1:i + 1]
+                if len(h) == sqrt_len:
+                    wts_h = np.arange(1, sqrt_len + 1)
+                    hull.iloc[i] = np.dot(h.values, wts_h) / wts_h.sum()
+            return hull
+        elif ma_type == 'ZEMA':
+            ema1 = src.ewm(span=length, adjust=False).mean()
+            ema2 = ema1.ewm(span=length, adjust=False).mean()
+            return ema1 + ema1 - ema2
+        elif ma_type == 'SSMA':
+            a1 = np.exp(-1.414 * 3.14159 / length)
+            b1 = 2 * a1 * np.cos(1.414 * 3.14159 / length)
+            c2 = b1
+            c3 = -a1 * a1
+            c1 = 1 - c2 - c3
+            ssma = pd.Series(np.zeros(len(src)), index=src.index)
+            for i in range(2, len(src)):
+                src_val = src.iloc[i] if not pd.isna(src.iloc[i]) else 0
+                src_prev = src.iloc[i - 1] if not pd.isna(src.iloc[i - 1]) else src_val
+                v9_prev = ssma.iloc[i - 1] if not pd.isna(ssma.iloc[i - 1]) else 0
+                v9_prev2 = ssma.iloc[i - 2] if not pd.isna(ssma.iloc[i - 2]) else v9_prev
+                ssma.iloc[i] = c1 * (src_val + src_prev) / 2 + c2 * v9_prev + c3 * v9_prev2
+            return ssma
+        else:
+            return src.rolling(length).mean()
+    
+    slowMA = ma_variant(maType, maSource, maLength)
+    fastMA = ma_variant(maTypeB, maSourceB, maLengthB)
+    
+    # Trend calculation
+    def calc_trend(series, reaction):
+        trend = pd.Series(np.zeros(len(series)), index=series.index)
+        trend[:reaction] = np.nan
+        for i in range(reaction, len(series)):
+            if series.iloc[i] > series.iloc[i - reaction]:
+                trend.iloc[i] = 1
+            elif series.iloc[i] < series.iloc[i - reaction]:
+                trend.iloc[i] = -1
+            else:
+                trend.iloc[i] = trend.iloc[i - 1] if not pd.isna(trend.iloc[i - 1]) else 0
+        return trend
+    
+    slowMATrend = calc_trend(slowMA, maReaction)
+    fastMATrend = calc_trend(fastMA, maReactionB)
+    
+    # Bullish conditions
+    isPriceAboveFastMA = bullishTrendCondition == 'PRECIO MAYOR A MEDIA RAPIDA' and (close > fastMA)
+    isPriceAboveSlowMA = bullishTrendCondition == 'PRECIO MAYOR A MEDIA LENTA' and (close > slowMA)
+    isPriceAboveBothMA = bullishTrendCondition == 'PRECIO MAYOR A MEDIA RAPIDA Y LENTA' and (close > slowMA) & (close > fastMA)
+    isPriceAboveSlowMAWithBullishTrend = bullishTrendCondition == 'PRECIO MAYOR A MEDIA LENTA Y DIRECCION ALCISTA' and (close > slow

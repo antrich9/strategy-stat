@@ -1,0 +1,193 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    # Parameters
+    rsi_type = "Regular"
+    period_rsi = 14
+    step_fast = 5
+    step_slow = 15
+    use_heartbeat = True
+    cross_confirm = True
+    inverse_heartbeat = False
+
+    use_fvma = True
+    cross_fvma = True
+    inverse_fvma = False
+    highlight_movements = True
+    adx_length = 2
+    weighting = 10.0
+    ma_length = 6
+
+    vfi_length = 130
+    coef = 0.2
+    vcoef = 2.5
+    signal_length = 5
+
+    atr_length = 22
+    mult = 3.0
+    src = (df['high'] + df['low']) / 2
+    wicks = True
+    use_supertrend = True
+
+    typical = (df['high'] + df['low'] + df['close']) / 3
+
+    # Wilders RSI
+    delta = typical.diff()
+    gains = delta.clip(lower=0)
+    losses = (-delta).clip(lower=0)
+    avg_gain = gains.expanding(min_periods=period_rsi).mean()
+    avg_loss = losses.expanding(min_periods=period_rsi).mean()
+    rs = avg_gain / avg_loss
+    rsi_line = 100 - (100 / (1 + rs))
+
+    # RSX
+    alpha_rsx = 2 / (period_rsi + 1)
+    mom_rsx = typical.diff()
+    abs_mom_rsx = mom_rsx.abs()
+    smooth_rsx = mom_rsx.ewm(alpha=alpha_rsx, adjust=False).mean()
+    momentum_rsx = smooth_rsx.ewm(alpha=alpha_rsx, adjust=False).mean()
+    abs_momentum_rsx = abs_mom_rsx.ewm(alpha=alpha_rsx, adjust=False).mean()
+    rsx_raw = 100 * momentum_rsx / abs_momentum_rsx
+    rsx = 50 * (rsx_raw + 1)
+
+    # Cuttler RSI
+    pos_cuttler = gains.rolling(period_rsi).sum()
+    neg_cuttler = losses.rolling(period_rsi).sum()
+    cuttler_rsi = 100 - (100 / (1 + pos_cuttler / neg_cuttler))
+
+    rsi_funcs = {"Wilders": rsi_line, "RSX": rsx, "Cuttler": cuttler_rsi}
+    rsi_type_lower = rsi_type.lower()
+    rsi_sel = rsi_funcs.get(rsi_type, rsi_line)
+    if rsi_type_lower not in rsi_funcs:
+        rsi_sel = rsi_line
+
+    # Step RSI Fast
+    step_fast_arr = np.zeros(len(df))
+    step_fast_arr[0] = rsi_sel.iloc[0] if not np.isnan(rsi_sel.iloc[0]) else 0
+    for i in range(1, len(df)):
+        val = rsi_sel.iloc[i]
+        if np.isnan(val):
+            step_fast_arr[i] = step_fast_arr[i-1]
+        else:
+            prev = step_fast_arr[i-1]
+            step_fast_arr[i] = max(min(prev, val + step_fast), max(prev, val - step_fast))
+
+    # Step RSI Slow
+    step_slow_arr = np.zeros(len(df))
+    step_slow_arr[0] = rsi_sel.iloc[0] if not np.isnan(rsi_sel.iloc[0]) else 0
+    for i in range(1, len(df)):
+        val = rsi_sel.iloc[i]
+        if np.isnan(val):
+            step_slow_arr[i] = step_slow_arr[i-1]
+        else:
+            prev = step_slow_arr[i-1]
+            step_slow_arr[i] = max(min(prev, val + step_slow), max(prev, val - step_slow))
+
+    step_fast_series = pd.Series(step_fast_arr, index=df.index)
+    step_slow_series = pd.Series(step_slow_arr, index=df.index)
+
+    trend = np.where(step_fast_series > step_slow_series, 1, np.where(step_fast_series < step_slow_series, -1, 0))
+    buy_signal = step_fast_series > step_slow_series
+    sell_signal = step_fast_series < step_slow_series
+
+    basic_long = buy_signal
+    basic_short = sell_signal
+
+    heartbeat_long = basic_long if not inverse_heartbeat else basic_short
+    heartbeat_short = basic_short if not inverse_heartbeat else basic_long
+
+    heartbeat_long_final = heartbeat_long if not cross_confirm else (~heartbeat_long.shift(1).fillna(False) & heartbeat_long)
+    heartbeat_short_final = heartbeat_short if not cross_confirm else (~heartbeat_short.shift(1).fillna(False) & heartbeat_short)
+
+    # FVMA
+    bulls1 = 0.5 * (np.abs(df['high'] - df['high'].shift(1)) + df['high'] - df['high'].shift(1))
+    bears1 = 0.5 * (np.abs(df['low'].shift(1) - df['low']) + df['low'].shift(1) - df['low'])
+    bulls = np.where(bulls1 > bears1, 0, np.where(bulls1 == bears1, 0, bears1))
+    bears = np.where(bulls1 < bears1, 0, np.where(bulls1 == bears1, 0, bulls1))
+
+    s_pdi = np.zeros(len(df))
+    s_mdi = np.zeros(len(df))
+    str_fvma = np.zeros(len(df))
+    adx_fvma = np.zeros(len(df))
+
+    for i in range(1, len(df)):
+        s_pdi[i] = (weighting * s_pdi[i-1] + bulls[i]) / (weighting + 1)
+        s_mdi[i] = (weighting * s_mdi[i-1] + bears[i]) / (weighting + 1)
+        tr_fvma = max(df['high'].iloc[i] - df['low'].iloc[i], df['high'].iloc[i] - df['close'].iloc[i-1], df['low'].iloc[i] - df['close'].iloc[i-1])
+        str_fvma[i] = (weighting * str_fvma[i-1] + tr_fvma) / (weighting + 1)
+
+    pdi_fvma = np.where(str_fvma > 0, s_pdi / str_fvma, 0)
+    mdi_fvma = np.where(str_fvma > 0, s_mdi / str_fvma, 0)
+    dx_fvma = np.where(pdi_fvma + mdi_fvma > 0, np.abs(pdi_fvma - mdi_fvma) / (pdi_fvma + mdi_fvma), 0)
+
+    for i in range(1, len(df)):
+        adx_fvma[i] = (weighting * adx_fvma[i-1] + dx_fvma[i]) / (weighting + 1)
+
+    adx_series = pd.Series(adx_fvma, index=df.index)
+    adx_low = adx_series.rolling(adx_length).min()
+    adx_max = adx_series.rolling(adx_length).max()
+    adx_min = np.minimum(1000000.0, adx_low)
+    adx_max_adj = np.maximum(-1.0, adx_max)
+    diff_fvma = adx_max_adj - adx_min
+    const_fvma = np.where(diff_fvma > 0, (adx_series - adx_min) / diff_fvma, 0)
+
+    var_ma = np.zeros(len(df))
+    var_ma[0] = df['close'].iloc[0] if not np.isnan(df['close'].iloc[0]) else 0
+    for i in range(1, len(df)):
+        var_ma[i] = ((2 - const_fvma.iloc[i]) * var_ma[i-1] + const_fvma.iloc[i] * df['close'].iloc[i]) / 2
+
+    var_ma_series = pd.Series(var_ma, index=df.index)
+    ma_fvma = var_ma_series.rolling(ma_length).mean()
+
+    fvma_signals = np.where(ma_fvma > ma_fvma.shift(1), 1, -1)
+
+    basic_long_fvma = (fvm a_signals > 0) & (df['close'] > ma_fvma)
+    basic_short_fvma = (fvma_signals < 0) & (df['close'] < ma_fvma)
+
+    fvma_signals_long = basic_long_fvma if use_fvma else pd.Series(True, index=df.index)
+    fvma_signals_short = basic_short_fvma if use_fvma else pd.Series(True, index=df.index)
+
+    fvma_long_cross = fvma_signals_long if not cross_fvma else (~fvma_signals_long.shift(1).fillna(False) & fvma_signals_long)
+    fvma_short_cross = fvma_signals_short if not cross_fvma else (~fvma_signals_short.shift(1).fillna(False) & fvma_signals_short)
+
+    fvma_long_final = fvma_short_cross if inverse_fvma else fvma_long_cross
+    fvma_short_final = fvma_long_cross if inverse_fvma else fvma_short_cross
+
+    # VFI
+    typical_log = np.log(typical)
+    inter = typical_log.diff()
+    vinter = inter.rolling(30).std(ddof=1)
+    cutoff = coef * vinter * df['close']
+    vave = df['volume'].shift(1).rolling(vfi_length).mean()
+    vmax = vave * vcoef
+    vc = np.minimum(df['volume'], vmax)
+    mf = typical.diff()
+    vcp = np.where(mf > cutoff, vc, np.where(mf < -cutoff, -vc, 0))
+    vfi = (pd.Series(vcp).rolling(vfi_length).sum() / vave).ewm(span=3, adjust=False).mean()
+    vfima = vfi.ewm(span=signal_length, adjust=False).mean()
+
+    # ATR
+    high_low = df['high'] - df['low']
+    high_close_prev = np.abs(df['high'] - df['close'].shift(1))
+    low_close_prev = np.abs(df['low'] - df['close'].shift(1))
+    tr = np.maximum(high_low, np.maximum(high_close_prev, low_close_prev))
+    alpha_atr = 1 / atr_length
+    atr = tr.ewm(alpha=alpha_atr, adjust=False).mean()
+
+    # SuperTrend
+    atr_value = atr * mult
+    high_price = df['high'] if wicks else df['close']
+    low_price = df['low'] if wicks else df['close']

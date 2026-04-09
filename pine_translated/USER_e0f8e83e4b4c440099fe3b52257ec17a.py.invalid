@@ -1,0 +1,271 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    
+    # Resample to 4H timeframe
+    df['time'] = pd.to_datetime(df['time'], unit='s', utc=True)
+    df_4h = df.set_index('time').resample('4h').agg({
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last',
+        'volume': 'sum'
+    }).dropna()
+    
+    # Calculate 4H indicators
+    high_4h = df_4h['high']
+    low_4h = df_4h['low']
+    close_4h = df_4h['close']
+    volume_4h = df_4h['volume']
+    
+    # Volume filter
+    volfilt1 = volume_4h.shift(1) > volume_4h.rolling(9).mean() * 1.5
+    
+    # ATR filter
+    tr = np.maximum(high_4h - low_4h, np.maximum(
+        np.abs(high_4h - close_4h.shift(1)),
+        np.abs(low_4h - close_4h.shift(1))
+    ))
+    atr_4h = tr.rolling(20).mean() / 1.5
+    atrfilt1 = (low_4h - high_4h.shift(2) > atr_4h) | (low_4h.shift(2) - high_4h > atr_4h)
+    
+    # Trend filter
+    loc1 = close_4h.rolling(54).mean()
+    loc2 = loc1 > loc1.shift(1)
+    locfiltb1 = loc2
+    locfilts1 = ~loc2
+    
+    # FVG detection on 4H
+    bfvg1 = (low_4h > high_4h.shift(2)) & volfilt1 & atrfilt1 & locfiltb1
+    sfvg1 = (high_4h < low_4h.shift(2)) & volfilt1 & atrfilt1 & locfilts1
+    
+    # Trading windows (check if 4H bar overlaps with window)
+    # Window 1: 07:00-11:45, Window 2: 14:00-14:45
+    df_4h = df_4h.copy()
+    df_4h['hour'] = df_4h.index.hour
+    df_4h['minute'] = df_4h.index.minute
+    df_4h['window1'] = ((df_4h['hour'] == 7) | ((df_4h['hour'] >= 8) & (df_4h['hour'] < 12))) | ((df_4h['hour'] == 11) & (df_4h['minute'] <= 45))
+    df_4h['window2'] = (df_4h['hour'] == 14) & (df_4h['minute'] <= 45)
+    df_4h['in_window'] = df_4h['window1'] | df_4h['window2']
+    
+    # Detect new 4H bars
+    df_4h['is_new_4h'] = True  # All resampled bars are new
+    
+    # Sharp turn detection with state tracking
+    entries = []
+    trade_num = 1
+    lastFVG = 0
+    
+    for i in range(1, len(df_4h)):
+        row = df_4h.iloc[i]
+        
+        if not row['in_window']:
+            continue
+        
+        # Update lastFVG state
+        if bfvg1.iloc[i]:
+            lastFVG = 1
+        elif sfvg1.iloc[i]:
+            lastFVG = -1
+        
+        # Check for sharp turn entries
+        if bfvg1.iloc[i] and lastFVG == -1:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': int(row.name.timestamp()),
+                'entry_time': row.name.isoformat(),
+                'entry_price_guess': row['close'],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': row['close'],
+                'raw_price_b': row['close']
+            })
+            trade_num += 1
+            lastFVG = 1
+        
+        elif sfvg1.iloc[i] and lastFVG == 1:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': int(row.name.timestamp()),
+                'entry_time': row.name.isoformat(),
+                'entry_price_guess': row['close'],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': row['close'],
+                'raw_price_b': row['close']
+            })
+            trade_num += 1
+            lastFVG = -1
+    
+    return entries
+
+I'm tracking the last FVG state to identify sharp turn patterns—when a bullish FVG follows a bearish one or vice versa. Each entry captures the trade number, direction, timestamp, and price. The state updates after each FVG detection, allowing me to detect the reversal patterns that signal potential entries. I need to complete the is_new_4h logic and reconsider the entry timing. In Pine Script, entries occur when a 4H bar closes and confirms a sharp turn pattern. Since I'm working with closed bars in Python, every 4H bar is already closed, so is_new_4h should be True for all bars. This means the bar_index check is just confirming we're on a valid 4H bar.
+
+For the trading windows, I'm realizing the logic needs adjustment. When resampling to 4H intervals, the bar timestamp marks the start of that period. A 4H bar beginning at 6:00 runs through 9:59, so checking if the hour equals 7 captures bars from 7:00-7:59, 11:00-11:59, and 14:00-14:59. I need to map this to the actual window times more carefully—the first window is 07:00-11:45 and the second is 14:00-14:45.
+
+Using ceiling division, I can calculate which 4H bar contains each window boundary. The 7:00 start falls into bar 1, the 11:45 end falls into bar 2, and the 14:00-14:45 window fits entirely within bar 3.
+
+For the implementation, I'll check if the bar index modulo 4 equals the relevant values: 1 for the morning window, 2 for the midday extension, and 3 for the afternoon window. This maps cleanly to the 4H resampling structure where bars cycle through 0-3.
+
+I need to verify that `is_new_4h1` correctly identifies when a new 4-hour period begins. The `timeframe.change("240")` function returns true on the first bar of each 4H period, which should align with bars at indices 0, 4, 8, etc. relative to the 4H cycle. Let me work through the logic more carefully. When the timeframe changes to 4H, bars align to 0:00, 4:00, 8:00, 12:00, 16:00, 20:00 UTC. Since the Europe/London timezone shifts between GMT and BST, I need to account for that offset when determining if a bar falls within the trading windows at 7:00-11:45 and 14:00-14:45 London time.
+
+I'll use a more direct approach: extract the hour and minute from each 4H bar's timestamp, convert to London time, then check if it falls within either window. I can also leverage the bar index modulo 4 to identify which 4H period we're in—if bars start at midnight UTC, then bars with index % 4 == 1 correspond to 4:00-7:59, index % 4 == 2 to 8:00-11:59, and so on.
+
+Rather than getting tangled in timezone offsets and DST transitions, I'll keep this straightforward: resample to 4H intervals starting from midnight UTC, then use the bar's hour to determine the trading window. For the morning session (7:00-11:45), that's bars at 8:00, 10:00, and the 12:00 bar partially. For the afternoon session (14:00-14:45), that's the 16:00 bar.
+
+Window 1 captures hours 7-11, and Window 2 specifically targets hour 14. I'll check if the 4H bar's starting hour falls within these ranges to determine if it's a valid trading window.
+
+Looking at the Pine Script logic, it checks if the bar's timestamp falls between the window boundaries. The `isWithinWindow` variables compare `time` against the start and end timestamps, so I need to verify the 4H bar's timestamp aligns with the intended window periods.
+
+Since we're working with completed 4H bars rather than real-time data, I can resample the dataframe to 4H intervals and check if each bar's timestamp falls within the specified windows. The entry conditions then combine the FVG signal with the window check to filter for valid trading opportunities.
+
+The implementation extracts the hour and minute from each 4H bar's timestamp, then applies two window conditions: one covering 07:00-11:45 and another for 14:00-14:45. The first window allows bars starting at hours 7 through 11, with the final hour (11) restricted to minutes 45 and earlier. The second window is restricted to hour 14 with minutes up to 45. The logic checks out. Now I need to implement the FVG detection properly. The bullish FVG forms when the current low exceeds the high from two periods back, while the bearish FVG occurs when the current high falls below the low from two periods back. Both conditions also require the volume and ATR filters to be satisfied.
+
+The sharp turn entry generates when a bullish FVG appears after a bearish one (going long) or when a bearish FVG appears after a bullish one (going short), but only on confirmed bars that mark a new 4-hour period. I need to be careful about how the lastFVG state updates—it changes whenever an FVG forms, not just on entries, so the tracking needs to reflect that behavior accurately.
+
+In Python with historical data, I can iterate through each 4H bar and check if it's new, then apply the confirmed bar condition. The key is computing the FVG and lastFVG states at each step, then checking if the sharp turn criteria are met before generating an entry signal.
+
+The implementation needs to handle the 4H resampling properly, track the FVG state changes, and only trigger entries when both the sharp turn condition and new bar confirmation align. I'll structure the code to compute all necessary indicators upfront, then loop through to identify valid entry points based on the directional change and bar state conditions. = pd.to_datetime(df['time'], unit='s', utc=True)
+    
+    # Resample to 4H
+    df_4h = df.set_index('time').resample('4H', offset='0s').agg({
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last',
+        'volume': 'sum'
+    }).dropna().reset_index()
+    
+    # Calculate 4H indicators
+    high_4h = df_4h['high']
+    low_4h = df_4h['low']
+    close_4h = df_4h['close']
+    volume_4h = df_4h['volume']
+    
+    # Volume filter (4H)
+    volfilt1 = (volume_4h.shift(1) > volume_4h.rolling(9).mean() * 1.5)
+    
+    # ATR filter (4H) - using Wilder's method
+    tr1 = np.maximum(high_4h - low_4h, np.maximum(
+        np.abs(high_4h - close_4h.shift(1)),
+        np.abs(low_4h - close_4h.shift(1))
+    ))
+    atr_4h = pd.Series(index=tr1.index, dtype=float)
+    atr_4h.iloc[0] = tr1.iloc[0]
+    for i in range(1, len(tr1)):
+        atr_4h.iloc[i] = (atr_4h.iloc[i-1] * 19 + tr1.iloc[i]) / 20
+    atr_4h = atr_4h / 1.5
+    atrfilt1 = ((low_4h - high_4h.shift(2) > atr_4h) | (low_4h.shift(2) - high_4h > atr_4h))
+    
+    # Trend filter (4H)
+    loc1 = close_4h.rolling(54).mean()
+    locfiltb1 = (loc1 > loc1.shift(1))
+    locfilts1 = (~locfiltb1)
+    
+    # Bullish and bearish FVG detection
+    bfvg1 = (low_4h > high_4h.shift(2)) & volfilt1 & atrfilt1 & locfiltb1
+    sfvg1 = (high_4h < low_4h.shift(2)) & volfilt1 & atrfilt1 & locfilts1
+    
+    # Detect new 4H candles
+    is_new_4h = df_4h.index.isin(df_4h.index)
+    
+    # Trading windows (check 4H bar start time)
+    hours = df_4h['time'].dt.hour
+    minutes = df_4h['time'].dt.minute
+    in_window = ((hours == 7) | ((hours >= 8) & (hours <= 10)) | ((hours == 11) & (minutes <= 45))) | ((hours == 14) & (minutes <= 45))
+    
+    # Sharp turn detection
+    entries = []
+    trade_num = 1
+    lastFVG = 0
+    
+    for i in range(1, len(df_4h)):
+        row = df_4h.iloc[i]
+        
+        # Update lastFVG state
+        if bfvg1.iloc[i]:
+            lastFVG = 1
+        elif sfvg1.iloc[i]:
+            lastFVG = -1
+        
+        # Sharp turn conditions (only on new 4H candles and in trading window)
+        if in_window.iloc[i] and lastFVG == 1 and sfvg1.iloc[i]:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': int(row['time'].timestamp()),
+                'entry_time': row['time'].isoformat(),
+                'entry_price_guess': row['close'],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': row['close'],
+                'raw_price_b': row['close']
+            })
+            trade_num += 1
+        elif in_window.iloc[i] and lastFVG == -1 and bfvg1.iloc[i]:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': int(row['time'].timestamp()),
+                'entry_time': row['time'].isoformat(),
+                'entry_price_guess': row['close'],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': row['close'],
+                'raw_price_b': row['close']
+            })
+            trade_num += 1
+    
+    return entries
+
+I'm noticing a bug in my state update logic. When I update `lastFVG` to 1 after detecting a bullish FVG, and then immediately check if that same FVG triggered a short entry, I'm checking the wrong condition. The `lastFVG == 1` should be checking the previous state before the update, not after. I need to store the previous FVG state before modifying it, then use that stored value for the entry condition check. Bearish FVG detected - bearish sharp turn entry
+            elif prev_lastFVG == -1 and bfvg1.iloc[i]:
+                direction = 'long'
+                entry_price = row['close']
+                raw_price_a = raw_price_b = entry_price
+            
+            if direction:
+                entries.append({
+                    'trade_num': trade_num,
+                    'direction': direction,
+                    'entry_ts': int(row['time'].timestamp()),
+                    'entry_time': row['time'].isoformat(),
+                    'entry_price_guess': entry_price,
+                    'exit_ts': 0,
+                    'exit_time': '',
+                    'exit_price_guess': 0.0,
+                    'raw_price_a': raw_price_a,
+                    'raw_price_b': raw_price_b
+                })
+                trade_num += 1
+
+Now I'm completing the trade dictionary with the remaining fields like exit timestamps and price values set to defaults. After appending the entry, I increment the trade number counter for the next iteration.
+
+Looking back at the Pine Script logic, I need to verify the condition checks match what I'm implementing. The script checks if a bullish FVG appears after a bearish one (triggering a long) or vice versa (triggering a short), along with window and new candle validation. I'm realizing there might be an issue with how I'm tracking the FVG state—when `bfvg1` is true, I set `lastFVG` to 1, but then the next condition `elif lastFVG == -1` won't execute since I already updated the state in the first `if` block.
+
+The corrected approach should check the previous state before updating: if the prior FVG was bearish and a bullish FVG appears now, that's a long entry. Similarly, if the prior FVG was bullish and a bearish FVG appears now, that's a short entry. The final `elif` clauses handle cases where no reversal occurred—just updating the state without triggering an entry.
+
+For the 4H candle detection, `timeframe.change("240")` identifies bars where the 4H period shifts. In Pine Script, this returns true on the first bar of each new 4H interval. Since I'm working with completed bars in this dataset, every resampled 4H bar represents a closed interval, so `is_new_4h1` should evaluate to true for all bars after the initial one.
+
+The script's confirmation logic—`barstate.isconfirmed and is_new_4h1`—ensures entries only trigger on closed 4H candles, which aligns with my completed bar approach. Since my data already represents finished candles, I can simplify by omitting the new bar check and just verifying the trading window condition.
+
+Now I need to implement this in Python. I'll use offset-based indexing with `.iloc[]` for the 4H resampled data, apply Wilder's RSI and ATR calculations, and structure the code to iterate through each completed 4H candle to generate entries based on the window constraints.

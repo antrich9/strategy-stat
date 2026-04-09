@@ -1,0 +1,39 @@
+# Convert time to datetime
+df['datetime'] = pd.to_datetime(df['time'], unit='s', utc=True)
+df['date'] = df['datetime'].dt.date
+
+# Compute daily aggregates
+daily = df.groupby('date').agg(
+    daily_high=('high', 'max'),
+    daily_low=('low', 'min'),
+    daily_close=('close', 'last')
+)
+# Shift to get previous and previous previous
+daily['prev_daily_high'] = daily['daily_high'].shift(1)
+daily['prev_daily_low'] = daily['daily_low'].shift(1)
+daily['prev_daily_close'] = daily['daily_close'].shift(1)
+
+daily['prev_prev_daily_high'] = daily['daily_high'].shift(2)
+daily['prev_prev_daily_low'] = daily['daily_low'].shift(2)
+daily['prev_prev_daily_close'] = daily['daily_close'].shift(2)
+
+# Compute bias
+def compute_bias(row):
+    prev_close = row['prev_daily_close']
+    prev_prev_high = row['prev_prev_daily_high']
+    prev_prev_low = row['prev_prev_daily_low']
+    if pd.isna(prev_close) or pd.isna(prev_prev_high) or pd.isna(prev_prev_low):
+        return np.nan
+    if prev_close < prev_prev_low:
+        return 'bearish'
+    elif prev_close > prev_prev_high:
+        return 'bullish'
+    elif (prev_close > prev_prev_low) and (prev_close < prev_prev_high):
+        return 'ranging'
+    else:
+        return np.nan
+
+daily['bias'] = daily.apply(compute_bias, axis=1)
+
+# Map bias back to original df
+df['bias'] = df['date'].map(daily['bias'])

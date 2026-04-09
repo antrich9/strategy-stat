@@ -1,0 +1,44 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    # Parameters
+    PP = 5  # pivot period used in the original script
+    high = df['high']
+    low = df['low']
+    close = df['close']
+
+    n = len(df)
+    # Identify pivot highs and lows using a simple window scan
+    pivot_high_arr = np.zeros(n, dtype=bool)
+    pivot_low_arr = np.zeros(n, dtype=bool)
+
+    for i in range(PP, n - PP):
+        if high.iloc[i] == high.iloc[i - PP:i + PP + 1].max():
+            pivot_high_arr[i] = True
+        if low.iloc[i] == low.iloc[i - PP:i + PP + 1].min():
+            pivot_low_arr[i] = True
+
+    # Convert to pandas Series for easier manipulation
+    pivot_high_series = pd.Series(pivot_high_arr, index=high.index)
+    pivot_low_series = pd.Series(pivot_low_arr, index=low.index)
+
+    # Create price series for the most recent pivot high/low and forward‑fill
+    pivot_high_price = high.where(pivot_high_series).ffill()
+    pivot_low_price = low.where(pivot_low_series).ffill()
+
+    # Detect entry signals using crossover / crossunder logic
+    # Crossover: close > pivot_high_price and previous close <= previous pivot_high_price
+    entry_long = (close > pivot_high_price) & (close.shift(1) <= pivot_high_price

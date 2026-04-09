@@ -1,0 +1,2 @@
+bull_fvg = h4_low[2:] > h4_high[:-2]
+bear_fvg = h4_high[2:] < h4_low[:-2]

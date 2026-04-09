@@ -1,0 +1,15 @@
+def compute_pivots(df, pp):
+    high = df['high'].values
+    low = df['low'].values
+    n = len(df)
+    pivot_high = [np.nan] * n
+    pivot_low = [np.nan] * n
+    for i in range(pp, n - pp):
+        if high[i] == max(high[i-pp:i+pp+1]):
+            # Check that the next pp bars have lower high? Actually, we don't need to check ahead for the value, we just need to check that the current bar is the highest in the window.
+            # In Pine Script, the pivot is confirmed after PP bars, but the value is set on the bar where the condition is met.
+            # We can just set the pivot high to the high value.
+            pivot_high[i] = high[i]
+        if low[i] == min(low[i-pp:i+pp+1]):
+            pivot_low[i] = low[i]
+    return pivot_high, pivot_low

@@ -1,0 +1,278 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    
+    # Default parameters from Pine Script
+    liq_len = 7
+    liq_mar = 10 / 6.9
+    fvg_wait_bars = 10
+    fvg_min_ticks = 3
+    atr_length = 14
+    
+    # Calculate ATR using Wilder's method
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    
+    # True Range calculation
+    tr1 = high - low
+    tr2 = abs(high - close.shift(1))
+    tr3 = abs(low - close.shift(1))
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    
+    # Wilder ATR
+    atr = tr.ewm(alpha=1/atr_length, adjust=False).mean()
+    
+    # Tolerance for liquidity zones
+    tolerance = atr / liq_mar
+    
+    # Detect pivots
+    pivot_high = df['high'].rolling(window=liq_len*2+1, center=True).max()
+    pivot_low = df['low'].rolling(window=liq_len*2+1, center=True).min()
+    pivot_high = pivot_high.where(df['high'] == pivot_high)
+    pivot_low = pivot_low.where(df['low'] == pivot_low)
+    
+    # FVG detection
+    bullish_fvg = (df['low'] > df['high'].shift(2)) & (df['high'] < df['low'].shift(2))
+    bearish_fvg = (df['high'] < df['low'].shift(2)) & (df['low'] > df['high'].shift(2))
+    
+    # Calculate FVG size
+    bullish_fvg_size = bullish_fvg * (df['low'] - df['high'].shift(2))
+    bearish_fvg_size = bearish_fvg * (df['low'].shift(2) - df['high'])
+    
+    # Assume a min tick size (can be adjusted based on asset)
+    min_tick = 0.01
+    min_fvg_size = fvg_min_ticks * min_tick
+    
+    bullish_fvg_valid = bullish_fvg & (bullish_fvg_size >= min_fvg_size)
+    bearish_fvg_valid = bearish_fvg & (bearish_fvg_size >= min_fvg_size)
+    
+    # Initialize tracking variables
+    last_buyside_breach_bar = None
+    last_buyside_breach_price = None
+    last_sellside_breach_bar = None
+    last_sellside_breach_price = None
+    
+    entries = []
+    trade_num = 0
+    
+    # Iterate through bars
+    for i in range(len(df)):
+        current_high = high.iloc[i]
+        current_low = low.iloc[i]
+        current_close = close.iloc[i]
+        
+        # Check for buyside breaches (price breaks above liquidity zone)
+        if last_buyside_breach_price is not None:
+            if current_high > last_buyside_breach_price + tolerance.iloc[i]:
+                last_buyside_breach_bar = i
+                last_buyside_breach_price = last_buyside_breach_price
+        
+        # Check for sellside breaches (price breaks below liquidity zone)
+        if last_sellside_breach_price is not None:
+            if current_low < last_sellside_breach_price - tolerance.iloc[i]:
+                last_sellside_breach_bar = i
+                last_sellside_breach_price = last_sellside_breach_price
+        
+        # Generate entries based on FVG and breach conditions
+        if bullish_fvg_valid.iloc[i] and last_sellside_breach_bar is not None:
+            if i - last_sellside_breach_bar <= fvg_wait_bars:
+                trade_num += 1
+                entries.append({
+                    'trade_num': trade_num,
+                    'direction': 'long',
+                    'entry_ts': df['time'].iloc[i],
+                    'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                    'entry_price_guess': current_close,
+                    'exit_ts': 0,
+                    'exit_time': '',
+                    'exit_price_guess': 0.0,
+                    'raw_price_a': current_close,
+                    'raw_price_b': current_close
+                })
+                last_sellside_breach_bar = None
+        
+        if bearish_fvg_valid.iloc[i] and last_buyside_breach_bar is not None:
+            if i - last_buyside_breach_bar <= fvg_wait_bars:
+                trade_num += 1
+                entries.append({
+                    'trade_num': trade_num,
+                    'direction': 'short',
+                    'entry_ts': df['time'].iloc[i],
+                    'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                    'entry_price_guess': current_close,
+                    'exit_ts': 0,
+                    'exit_time': '',
+                    'exit_price_guess': 0.0,
+                    'raw_price_a': current_close,
+                    'raw_price_b': current_close
+                })
+                last_buyside_breach_bar = None
+    
+    return entries
+
+I'm tracking breach events for both buyside and sellside liquidity zones. When a breach occurs, I record the bar index and price level. Then I check if valid FVGs form within the waiting window—if a bullish FVG appears after a sellside breach, that's a long entry signal, and vice versa for shorts. After generating an entry, I clear the breach tracking to avoid duplicate signals. need to verify the logic more carefully. In the original script, breaches are detected within the zone tracking loop where `bar_index` represents the current bar. The code checks if price exceeds the zone price plus tolerance to mark a buyside breach, and similarly for sellside breaches. My approach of detecting breaches during the entry loop should align with this—I need to ensure I'm capturing the breach at the correct bar and then tracking the bar count properly through the FVG waiting period.
+
+For pivot detection, the script uses `ta.pivothigh` and `ta.pivotlow` with a length parameter. While I could use scipy's argrelextrema, a simpler rolling window approach would be more straightforward: identifying a pivot high where the current high exceeds all values within a window of `liq_len` bars before and after it. This mirrors what `ta.pivothigh(high, liq_len, liq_len)` accomplishes—it finds the highest point in a 2*liq_len+1 window and returns its value at the center bar position. (liq_len + 1)
+    
+    # Pivot low: lowest low in the window
+    pivot_low = low.rolling(window=window, center=True, min_periods=window).min()
+    pivot_low = pivot_low.where(low == pivot_low)
+    
+    # For confirmed bars (skip first liq_len bars)
+    # Actually, we need to check at each bar if a pivot was formed liq_len bars ago
+    # Let's create shifted versions
+    
+    # A pivot high at index i means high[i] is the max from i-len to i+len
+    # In Pine: ta.pivothigh(high, len, len) returns high[i] where i is the pivot bar
+    # The pivot is detected when we're at bar_index = i + len
+    
+    # So for Python, at index i (which corresponds to bar_index in Pine):
+    # - pivot high was at index i - liq_len if high[i-li
+
+I need to identify the maximum high and minimum low within the pivot window. For a pivot high, the current bar must be the highest point when looking back liq_len bars and forward liq_len bars. The pivot low follows the same logic with the minimum value. Once I have these windows calculated, I can shift the series to align with when the pivot was actually detected in the Pine Script logic. pivot_high_detected = (pivot_high_idx >= 0) & (idx - pivot_high_idx <= liq_len) & (idx - pivot_high_idx >= 0)
+
+The pivot high gets marked when the current bar index falls within the window after the actual pivot occurred. This means a pivot high found at index i creates a signal at index i + liq_len.
+
+I'm overcomplicating the pivot detection. Let me simplify: I need to track when the price breaks above or below recent swing levels. A buyside breach happens when the high exceeds the highest point from the past liq_len bars plus a tolerance buffer. Similarly, a sellside breach occurs when the low drops below the lowest point from the recent period.
+
+For the entry conditions, a long setup requires a sellside breach within the waiting window followed by a valid bullish FVG, while a short setup needs the opposite—a buyside breach and bearish FVG. The FVG itself forms when there's a gap between the current bar's low and the high from two bars back.
+
+The breach detection should compare the current bar's high against the highest point from the lookback period plus the tolerance buffer. I'm calculating this as a rolling maximum of the highs over liq_len bars, then checking if the current high exceeds that threshold by the tolerance amount.
+
+For the sellside breach, I'll do the inverse—finding the rolling minimum of the lows and checking if the current low drops below it by the tolerance. Since the pivot point in Pine Script is actually `liq_len` bars back from where the breach is detected, I need to account for this offset when comparing the historical price levels.
+
+Using the rolling window approach: for a buyside breach at index `i`, I check if `high[i] > max(high[i-len:i]) + tolerance[i]`, and for sellside breaches, `low[i] < min(low[i-len:i]) - tolerance[i]`. This captures the same logic as the original script where the pivot is calculated `liq_len` bars back from the current bar. bars back is > previous max + tolerance, so it's a new high beyond the old pivot. This matches the rolling window logic.
+
+The simplest approach is to calculate the rolling max and min over the lookback period, then compare current price action against these levels with tolerance thresholds. For buyside breaches, I need high exceeding the rolling max plus tolerance, and for sellside breaches, low dropping below the rolling min minus tolerance. The rolling window approach aligns with the original logic, so I'll stick with that.
+
+For implementation, I need to handle NaN values from the rolling calculations in the first `liq_len` rows. The tolerance calculation should use the ATR divided by the margin parameter.
+
+The FVG detection requires checking if the current bar's low exceeds the high from two bars back, and calculating the size difference between them.
+
+For the bullish FVG condition, the size must meet a minimum threshold based on `fvg_min_ticks`. Since I'm working without explicit tick size information, I'll use a reasonable default like 0.01 and multiply it by the minimum tick parameter to establish the validation threshold.
+
+Actually, the size comparison is more direct—I can just check if the absolute price difference exceeds a fixed minimum value rather than dealing with tick conversions. I'll set a threshold of 0.10 as the minimum FVG size for validation.
+
+Now for the breach detection logic. I need to identify when price breaks above or below the recent range with sufficient momentum. The approach is to look at the highest high and lowest low over the lookback period, then check if the current bar's high exceeds the recent high by a tolerance amount (for bullish breaks) or if the current low drops below the recent low by the tolerance (for bearish breaks).
+
+For the tolerance calculation, I'm using ATR divided by the liq_mar parameter, which gives me a dynamic threshold based on market volatility. The lookback window is set to 7 bars by default, so I calculate the rolling maximum high and minimum low over that period, then compare the current bar's action against these levels with the tolerance buffer applied.
+
+However, I realize this approach would generate a breach signal on every bar after the initial pivot, which isn't the intended behavior. The original logic marks a zone as breached only once, then permanently sets `zone.breached := true` to prevent repeated signals. I need to replicate this stateful behavior by tracking which zones have already been breached and only generating new signals for unbreached zones.
+
+The key insight is that each pivot high/low creates a distinct zone at that price level. A zone gets marked breached when price crosses the tolerance threshold away from it, and subsequent bars don't re-trigger the breach for that same zone. So I should maintain a record of breached zone prices and only signal when price crosses a zone that hasn't been breached yet.
+
+For implementation, I can track the most recent breach at each level and only reset it when entering a trade, preventing duplicate signals while still catching new breaches that occur after the previous one was cleared. For the sellside, I'm tracking when price drops below the rolling low minus a tolerance buffer. Once a breach occurs, I need to detect a bullish FVG within the next fvg_wait_bars bars to confirm the entry signal. The FVG forms when price jumps above the high from two bars back, creating a gap that suggests institutional buying pressure. I should also verify this FVG meets a minimum size threshold to filter out noise.
+
+Now I'll code this up and establish reasonable default parameters. I need to handle the FVG size calculation carefully—while Pine Script divides by syminfo.mintick to validate against a tick-based minimum, I'll use a fixed threshold approach since I don't have access to the symbol's tick size. For ATR and RSI calculations, I'll implement Wilder's exponential moving average method using pandas' ewm function with the appropriate alpha decay. The pivot detection for swing highs and lows will use a rolling window approach to identify local extrema.
+
+For the rolling window calculation, I'm checking if each bar represents a local maximum or minimum within the liq_len window. A bar qualifies as a pivot high if it's higher than all surrounding bars within that range, and similarly for pivot lows. Then I'll track whether recent pivots have been breached to determine entry conditions. 1]):
+        zone_price = pivot_high_vals[j]
+        if high_val > zone_price + tolerance.iloc[i] and zone_price not in breached_pivot_highs:
+            breached_pivot_highs.append(zone_price)
+            breach_detected = True
+    
+    for j, zone_price in enumerate(pivot_low_vals):
+        if zone_price not in breached_pivot_lows and low_val < zone_price - tolerance.iloc[i]:
+            breached_pivot_lows.append(zone_price)
+            breach_detected = True
+    
+    if bar_idx > 0:
+        bars_since_pivot_high = bar_idx - pivot_high_idx
+        bars_since_pivot_low = bar_idx - pivot_low_idx
+        
+        if bars_since_pivot_high <= fvg_wait_bars and bars_since_pivot_high > 0:
+            if bullish_fvg_valid.iloc[i] and not long_entry_today:
+                entries.append(...)
+                long_entry_today = True
+        
+        if bars_since_pivot_low <= fvg_wait_bars and bars_since_pivot_low > 0:
+            if bearish_fvg_valid.iloc[i] and not short_entry_today:
+                entries.append(...)
+                short_entry_today = True
+
+This approach is getting unwieldy. I need to step back and simplify. The core logic should track breaches more directly—when price crosses above a recent pivot high or below a recent pivot low—then check if that breach happened within the allowable window and if there's a valid FVG confirmation. Let me refactor to use a cleaner state management approach that just tracks the most recent breach bar for each direction and validates entries against that. , high_val + 0.1)  # Ensure it's above current high
+    
+    # Check for bullish FVG
+    if last_sellside_breach_bar is not None:
+        bars_since_breach = i - last_sellside_breach_bar
+        
+        # Clear if too old
+        if bars_since_breach > fvg_wait_bars:
+            last_sellside_breach_bar = None
+            last_sellside_breach_price = None
+        elif bullish_fvg_valid.iloc[i]:
+            # LONG entry
+            trade_num += 1
+            entry_time = datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat()
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': df['time'].iloc[i],
+                'entry_
+
+When price moves above the recent high plus tolerance, I mark a sellside breach. Then I check if a bullish FVG formed after that breach—if it did within the waiting window, that's my long entry signal. The breach tracking resets if it gets too old without triggering a trade.
+
+For shorts, I do the inverse: when price drops below the recent low minus tolerance, I detect a buyside breach. If a bearish FVG appears after that breach, I execute the short entry.
+
+One thing I'm noticing about the zone logic—each pivot creates a new zone that persists, so multiple breaches can occur across different zones over time. My rolling window approach should capture this since it continuously updates the tracked high and low levels.
+
+The Pine Script checks if `high > zone.price + tolerance` whenever `zone.breached == false`, which means it evaluates every unbreached zone against current price. I need to track which zones have been breached separately rather than just checking against the current rolling window.
+
+For efficiency with large datasets, I could maintain a deque of recent pivot highs and mark zones as breached when price crosses them. Alternatively, a simpler heuristic would check if price breaks above the highest high from the past N bars plus tolerance—this gives a reasonable approximation of zone breach detection without needing complex zone tracking.
+
+I'll go with the rolling window approach since it's straightforward: calculate the max high over the lookback period, then flag a breach when price exceeds that level by the tolerance amount.
+
+For the implementation, I need to handle the lookback windows carefully. Since the pivot high is detected `liq_len` bars ago, a breach can only occur from that point forward. I'll compute rolling max and min over `liq_len` periods, starting the breach checks from index `liq_len` onward to avoid false signals from incomplete windows.
+
+Let me verify the logic with an example: if `liq_len = 7`, the first valid pivot appears at index 7, so breaches can start being checked at that same index. The rolling window calculations need to align with this timing to ensure we're comparing the correct historical levels against current price action.
+
+At index 7, the rolling high encompasses bars 0-7, with the pivot high at index 0, and the breach check compares the current high against the zone price plus tolerance. By index 8, the window shifts to bars 1-8, and the pivot reference point moves to index 1. This pattern continues, with the rolling window advancing one bar at a time while maintaining the proper offset between the pivot detection and breach evaluation points.
+
+The approach is sound. I should note that NaN values from the rolling calculations won't interfere since the breach conditions require `high.iloc[i]` to be defined and exceed the threshold. The entry generation should only trigger when these conditions are met.
+
+For the function implementation, I'm setting default parameters (liq_len = 7, liq_mar ≈ 1.449, fvg_wait_bars = 10, atr_length = 14) and will calculate ATR using Wilder's method with these inputs. The ATR will then be used to determine the tolerance threshold for detecting zones. I need to shift the pivot indices back by `liq_len` positions so that when a pivot is detected at bar `i`, the breach check occurs at bar `i + liq_len`. This aligns with the Pine Script logic where `ph = ta.pivothigh(high, liqLen, liqLen)` identifies the high at bar `i - liqLen`, and the breach condition is evaluated at the current bar.
+
+For the pivot arrays themselves, I'll use forward-fill to propagate each detected pivot forward until the next one appears, ensuring that the pivot value persists across the bars where it's relevant for the breach check. # Shift pivot indices by liq_len to align with detection bars
+    pivot_high_idx_shifted = pivot_high_idx.shift(liq_len)
+    pivot_low_idx_shifted = pivot_low_idx.shift(liq_len)
+    
+    # Fill NaN values
+    pivot_high_idx_shifted = pivot_high_idx_shifted.fillna(-1).astype(int)
+    pivot_low_idx_shifted = pivot_low_idx_shifted.fillna(-1).astype(int)
+    
+    # Breach tracking
+    last_buyside_breach_bar = None
+    last_buyside_breach_price = None
+    last_sellside_breach_bar = None
+    last_sellside_breach_price = None
+    
+    # Track breached pivot highs/lows to avoid duplicate breaches
+    breached_pivot_
+
+I'm shifting the pivot indices by `liq_len` bars to match when they should be detected, then converting to integers. The breach variables track recent price violations, and I'm setting up a set to prevent counting the same pivot level twice.
+
+For the main loop, I need to skip the first `liq_len` bars since we can't evaluate breaches without sufficient history. At each bar, I'll check if there's an unbreached pivot high nearby—if price exceeds the pivot level by more than the tolerance and we haven't breached this pivot yet, I'll record the breach details.
+
+Then I'll do the same for pivot lows, checking if price drops below the pivot minus tolerance. Once I have the breach information, I can calculate how many bars have passed since the last buyside and sellside breaches occurred.
+
+If it's been too long since a sellside breach (exceeding the wait period), I clear that tracking variable. Otherwise, if there's an active sellside breach and a valid bullish FVG forms, I trigger a long entry—recording the trade details with a unique number, timestamp, entry price, and marking the direction. The same logic applies for short entries when buyside breaches occur.
+
+I also need to reset the breach variables immediately after entering a position to prevent duplicate signals. For robustness, I should account for NaN values in the bullish_fvg_valid and bearish_fvg_valid calculations when checking conditions. The fvg_min_ticks threshold warrants closer examination since the original calculation divides by syminfo.mintick to convert from price to ticks.
+
+Since mintick varies by asset—0.01 for stocks, 0.0001 for forex—I'll skip this conversion and apply a simple minimum size check instead. With typical stock prices in the 100-500 range, a minimum FVG of 0.10 seems reasonable as a baseline.
+
+Now I'll write out the complete function:

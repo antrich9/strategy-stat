@@ -1,0 +1,165 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    
+    # Ensure dataframe has required columns
+    required_cols = ['time', 'open', 'high', 'low', 'close', 'volume']
+    if not all(col in df.columns for col in required_cols):
+        return []
+    
+    # Make a copy to avoid modifying original
+    df = df.copy()
+    
+    # Convert time to datetime (UTC)
+    df['datetime'] = pd.to_datetime(df['time'], unit='s', utc=True)
+    
+    # Convert to Europe/London timezone manually
+    def to_london_time(ts):
+        dt = ts.tz_convert(None)  # Remove timezone
+        month = dt.month
+        # Simple DST check: BST is last Sunday of March to last Sunday of October
+        # March: last Sunday
+        if month == 3:
+            # Find last Sunday of March
+            last_day = 31
+            last_sunday = last_day - ((dt.replace(day=31).weekday()) % 7)
+            if dt.day >= last_sunday:
+                return dt + pd.Timedelta(hours=1)  # BST
+        elif month == 10:
+            # Find last Sunday of October
+            last_day = 31
+            last_sunday = last_day - ((dt.replace(day=31).weekday()) % 7)
+            if dt.day < last_sunday:
+                return dt + pd.Timedelta(hours=1)  # BST
+        elif month > 3 and month < 10:
+            return dt + pd.Timedelta(hours=1)  # BST
+        return dt  # GMT
+    
+    df['datetime_london'] = df['datetime'].apply(to_london_time)
+    df['hour'] = df['datetime_london'].dt.hour
+    df['minute'] = df['datetime_london'].dt.minute
+    
+    # Trading window: 09:45 - 10:45 London time
+    df['in_window'] = ((df['hour'] == 9) & (df['minute'] >= 45)) | ((df['hour'] == 10) & (df['minute'] < 45))
+    
+    # Aggregate to 4H data
+    # 4H periods: 00:00-03:59, 04:00-07:59, 08:00-11:59, 12:00-15:59, 16:00-19:59, 20:00-23:59
+    df['4h_period'] = (df['datetime'].dt.hour // 4).astype(int)
+    
+    df_4h = df.groupby('4h_period').agg({
+        'time': 'first',
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last',
+        'volume': 'sum',
+        'datetime': 'first'
+    }).reset_index()
+    
+    # Calculate ATR using Wilder's method
+    def calc_atr(df, period=20):
+        tr1 = df['high'] - df['low']
+        tr2 = abs(df['high'] - df['close'].shift(1))
+        tr3 = abs(df['low'] - df['close'].shift(1))
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        
+        atr = tr.ewm(alpha=1/period, adjust=False).mean()
+        return atr
+    
+    df_4h['atr'] = calc_atr(df_4h, 20)
+    
+    # Calculate volume SMA
+    df_4h['vol_sma'] = df_4h['volume'].rolling(9).mean()
+    
+    # Calculate trend SMA
+    df_4h['trend_sma'] = df_4h['close'].rolling(54).mean()
+    df_4h['trend_up'] = df_4h['trend_sma'] > df_4h['trend_sma'].shift(1)
+    
+    # Identify 4H period change (new 4H candle)
+    df_4h['is_new_4h'] = df_4h['4h_period'] != df_4h['4h_period'].shift(1)
+    
+    # Filter settings (all enabled based on inputs)
+    vol_filter = df_4h['volume'].shift(1) > df_4h['vol_sma'].shift(1) * 1.5
+    atr_filter = ((df_4h['low'] - df_4h['high'].shift(2) > df_4h['atr'] / 1.5) | 
+                 (df_4h['low'].shift(2) - df_4h['high'] > df_4h['atr'] / 1.5))
+    
+    # Detect FVGs on 4H data
+    df_4h['bull_fvg'] = (df_4h['low'] > df_4h['high'].shift(2)) & vol_filter & atr_filter & df_4h
+
+['trend_up']
+    df_4h['bear_fvg'] = (df_4h['high'] < df_4h['low'].shift(2)) & vol_filter & atr_filter & ~df_4h['trend_up']
+    
+    # Calculate gap sizes for FVGs
+    df_4h['bull_gap'] = df_4h['low'] - df_4h['high'].shift(2)
+    df_4h['bear_gap'] = df_4h['low'].shift(2) - df_4h['high']
+    
+    # Track FVG type
+    df_4h['last_fvg'] = 0
+    df_4h.loc[df_4h['bull_fvg'], 'last_fvg'] = 1
+    df_4h.loc[df_4h['bear_fvg'], 'last_fvg'] = -1
+    
+    # Detect Sharp Turns (FVG type change)
+    df_4h['prev_last_fvg'] = df_4h['last_fvg'].shift(1)
+    
+    df_4h['bullish_turn'] = df_4h['bull_fvg'] & (df_4h['prev_last_fvg'] == -1)
+    df_4h['bearish_turn'] = df_4h['bear_fvg'] & (df_4h['prev_last_fvg'] == 1)
+    
+    # Only trigger on new 4H candles
+    df_4h['bullish_turn'] = df_4h['bullish_turn'] & df_4h['is_new_4h']
+    df_4h['bearish_turn'] = df_4h['bearish_turn'] & df_4h['is_new_4h']
+    
+    # Merge 4H signals back to 15min data
+    # For each 4H period, find the first 15min bar that's within the window
+    df_4h_signals = df_4h[['4h_period', 'bullish_turn', 'bearish_turn']].copy()
+    df_merged = df.merge(df_4h_signals, on='4h_period', how='left')
+    
+    # Only trigger within trading window
+    df_merged['bullish_entry'] = df_merged['in_window'] & df_merged['bullish_turn']
+    df_merged['bearish_entry'] = df_merged['in_window'] & df_merged['bearish_turn']
+    
+    # Generate entry list
+    entries = []
+    trade_num = 1
+    
+    for idx, row in df_merged.iterrows():
+        if row['bullish_entry']:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': int(row['time']),
+                'entry_time': datetime.fromtimestamp(row['time'] / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
+                'entry_price': float(row['close']),
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price': 0.0
+            })
+            trade_num += 1
+        elif row['bearish_entry']:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': int(row['time']),
+                'entry_time': datetime.fromtimestamp(row['time'] / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S'),
+                'entry_price': float(row['close']),
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price': 0.0
+            })
+            trade_num += 1
+    
+    return entries
+
+Now I need to complete the implementation by handling the bullish and bearish entry conditions. I'm checking if the London window aligns with the 4H candle boundaries, then creating a merged dataframe to track both 15-minute and 4-hour signals. For each entry condition met within the trading window, I'm generating an entry dictionary with the trade number, direction, timestamp, and entry price, then incrementing the trade counter. the Pine Script's `timeframe.change("240")` function detects when a 4H period boundary is crossed. To replicate this in Python, I can identify new 4H candles by checking when the 4H period value changes relative to the previous row. This means comparing the current 4H period against the previous one to flag transitions between periods.

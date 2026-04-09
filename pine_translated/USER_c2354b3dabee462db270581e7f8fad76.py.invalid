@@ -1,0 +1,1 @@
+is_swing_high11 = (daily['high'].shift(1) < daily['high'].shift(2)) & (daily['high'].shift(3) < daily['high'].shift(2)) & (daily['high'].shift(4) < daily['high'].shift(2))

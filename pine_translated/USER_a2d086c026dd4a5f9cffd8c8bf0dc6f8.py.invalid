@@ -1,0 +1,43 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    entries = []
+    trade_num = 1
+
+    if df.empty:
+        return entries
+
+    asia_start_hour = 9
+    asia_start_minute = 30
+    asia_end_hour = 10
+    asia_end_minute = 0
+
+    tz = timezone.utc
+    df = df.copy()
+    df['dt'] = pd.to_datetime(df['time'], unit='s', utc=True).dt.tz_convert(tz)
+
+    def get_timestamp(sess_hour, sess_minute, day_offset):
+        dt = df['dt'].iloc[0]
+        return datetime(dt.year, dt.month, dt.day + day_offset, sess_hour, sess_minute, tzinfo=tz)
+
+    session_start_ts = get_timestamp(asia_start_hour, asia_start_minute, 0)
+    day_offset_end = 1 if asia_end_hour <= asia_start_hour else 0
+    session_end_ts = get_timestamp(asia_end_hour, asia_end_minute, day_offset_end)
+
+    df['in_session'] = (df['dt'] >= session_start_ts) & (df['dt'] < session_end_ts)
+
+    session_data = df.groupby('session_start_ts').agg(
+        session_high=('high', 'max'),
+        session_low=('low', 'min')
+    ).reset_index()
+
+    df['session_high'] = df['session_start_ts'].map(session_data.set_index('session_start_ts')['session_high'])
+    df['session_low'] = df['session_start_ts'].map(session_data.set_index('session_start_ts')['session_low'])
+
+    df['new_session'] = (~df['in_session'].shift(1, fill_value=False)) & df['in_session']
+
+    daily = df.resample('D', on='dt').agg({'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'})
+    daily['pdh'] = daily['high'].shift(1)
+    daily['p

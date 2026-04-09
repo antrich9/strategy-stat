@@ -1,0 +1,53 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    # ---------- Default parameters (mimic Pine script inputs) ----------
+    PDCM = 70                       # min body % for elephant candle
+    CDBA = 100                      # ATR length (bars lookback)
+    FDB = 1.3                       # body/ATR factor
+    ma_len = 20                     # slow MA period
+    ma_len_b = 8                    # fast MA period
+    reaction_ma_1 = 1               # reaction length slow MA (unused for default)
+    reaction_ma_2 = 1               # reaction length fast MA
+    VVEV = True                     # enable green elephant entries
+    modo_tipo = "CON FILTRADO DE TENDENCIA"   # trend filter mode
+
+    # ---------- Indicator calculations ----------
+    close = df['close']
+    open_ = df['open']
+    high = df['high']
+    low = df['low']
+
+    # Body size and body‑range ratio
+    body_abs = (close - open_).abs()
+    hl_range = high - low
+    body_ratio = body_abs * 100 / hl_range.replace(0, np.nan)
+
+    # Elephant candle basic flags
+    VVE_0 = close > open_
+    VRE_0 = close < open_
+
+    VVE_1 = VVE_0 & (body_ratio >= PDCM)
+    VRE_1 = VRE_0 & (body_ratio >= PDCM)
+
+    # True Range and Wilder ATR (len = CDBA)
+    tr = np.maximum(high - low,
+                    np.maximum(np.abs(high - close.shift(1)),
+                               np.abs(low - close.shift(1))))
+    atr = tr.ewm(alpha=1.0 / CDBA, adjust=False).mean()
+
+    # Elephant candle with ATR factor
+    VVE_2 = VVE_1 & (body_abs >= atr.shift(1) * F

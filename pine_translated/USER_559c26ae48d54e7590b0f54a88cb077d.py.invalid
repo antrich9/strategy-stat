@@ -1,0 +1,32 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    alphaLength = 20
+    gammaLength = 20
+    src = df['close'].copy()
+    
+    alpha = 2 / (alphaLength + 1)
+    gamma = 2 / (gammaLength + 1)
+    
+    hema = np.zeros(len(df))
+    b = np.zeros(len(df))
+    for i in range(len(df)):
+        if i == 0:
+            hema[i] = alpha * src.iloc[i]
+            b[i] = 0.0
+        else:
+            hema_prev = hema[i-1]
+            b_prev = b[i-1]
+            hema[i] = (1 - alpha) * (hema_prev + b_prev) + alpha * src.iloc[i]
+            b[i] = gamma * (hema[i] - hema_prev)
+    
+    hema_series = pd.Series(hema, index=df.index)
+    hema_color_green = hema_series > hema_series.shift(1).fillna(0)
+    
+    per_tbi = 14
+    per2_tbi = 14
+    lowest_low_1 = df['low'].shift(1).rolling(per_tbi).min()
+    lowest_low_per = df['low'].rolling(per_tbi).min()
+    loc_tbi = (df['low'] < lowest_low_1) & (df['low

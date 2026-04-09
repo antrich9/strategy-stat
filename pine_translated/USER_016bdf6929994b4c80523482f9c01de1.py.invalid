@@ -1,0 +1,7 @@
+def alma(src, length, offset, sigma):
+    m = offset * (length - 1)
+    w = np.exp(-((np.arange(length) - m) ** 2) / (2 * sigma ** 2))
+    w_sum = w.sum()
+    # rolling apply
+    alma_vals = src.rolling(length).apply(lambda x: np.dot(x[::-1], w) / w_sum, raw=True)
+    return alma_vals

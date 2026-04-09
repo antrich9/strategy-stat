@@ -1,0 +1,55 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    df = df.copy()
+    df['datetime'] = pd.to_datetime(df['time'], unit='s')
+
+    df_indexed = df.set_index('datetime')
+
+    # Weekly data aggregation
+    weekly_agg = df_indexed.resample('W').agg({'high': 'max', 'low': 'min', 'close': 'last'}).dropna()
+    weekly_agg['higher_highs'] = weekly_agg['high'] > weekly_agg['high'].shift(1)
+    weekly_agg['higher_lows'] = weekly_agg['low'] > weekly_agg['low'].shift(1)
+    weekly_agg['weekly_uptrend'] = weekly_agg['higher_highs'] & weekly_agg['higher_lows']
+    weekly_agg = weekly_agg.reset_index()
+    weekly_agg['week_key'] = weekly_agg['datetime'].dt.to_period('W').dt.start_time
+    weekly_agg = weekly_agg[['week_key', 'weekly_uptrend']]
+
+    # Daily data aggregation
+    daily_agg = df_indexed.resample('D').agg({'high': 'max', 'low': 'min', 'close': 'last'}).dropna()
+    daily_agg['higher_highs'] = daily_agg['high'] > daily_agg['high'].shift(1)
+    daily_agg['higher_lows'] = daily_agg['low'] > daily_agg['low'].shift(1)
+    daily_agg['daily_uptrend'] = daily_agg['higher_highs'] & daily_agg['higher_lows']
+    daily_agg = daily_agg.reset_index()
+    daily_agg['day_key'] = daily_agg['datetime'].dt.normalize()
+    daily_agg = daily_agg[['day_key', 'daily_uptrend']]
+
+    # Create keys for merging
+    df['day_key'] = df['datetime'].dt.normalize()
+    df['week_key'] = df['datetime'].dt.to_period('W').dt.start_time
+
+    # Merge higher timeframe data
+    df = df.merge(daily_agg, on='day_key', how='left')
+    df = df.merge(weekly_agg, on='week_key', how='left')
+
+    # Calculate SMA 50
+    df['sma_50'] = df['close'].rolling(50).mean()
+
+    # Calculate Crossover and Crossunder
+    df['crossover'] = (df['close'] > df['sma_50']) & (df['close'].shift(1) <= df['sma_50'].shift(1))
+    df['crossunder'] = (df['close'] < df['sma_50']) & (df['close'].shift(1) >= df['sma_50'].shift(1))
+
+    # Calculate Entry Conditions
+    df['long_condition'] = df['weekly_uptrend'] & df['daily_uptrend'] & df['crossover']
+    df['short_condition'] = (~df['weekly_uptrend']) & (~df['daily_uptrend']) & df['crossunder']
+
+    # Generate entries list
+    entries = []
+    trade_num = 1
+
+    for i in range(len(df)):
+        row = df.iloc[i]
+        
+        long_cond = row['

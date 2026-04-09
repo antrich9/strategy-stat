@@ -1,0 +1,12 @@
+# inpEIT = hl2 = (high + low) / 2
+
+
+srcEIT = (df['high'] + df['low']) / 2
+srcEIT_prev = srcEIT.shift(1)
+srcEIT_prev2 = srcEIT.shift(2)
+
+alphaEIT = 0.07
+
+# Initialize itrendEIT
+itrendEIT = np.zeros(len(df))
+triggerEIT = np.zeros(len(df))

@@ -1,0 +1,114 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    # Series shortcuts
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    open_ = df['open']
+
+    # === Input parameters (mirroring Pine script defaults) ===
+    donchLength = 20
+    minBodyPercentage = 70
+    previousBarsCount = 100
+    searchFactor = 1.3
+    maLength = 20
+    maLengthB = 8
+    maReaction = 1
+    maReactionB = 1
+    bullishTrendCondition = "DIRECCION MEDIA RAPIDA ALCISTA"
+    bearishTrendCondition = "DIRECCION MEDIA RAPIDA BAJISTA"
+    filterType = "CON FILTRADO DE TENDENCIA"
+    activateGreenElephantCandles = True
+    activateRedElephantCandles = True
+    operationMode = True
+    almaLength = 9
+    offset = 0.85
+    sigma = 6
+
+    # === ATR (Wilder) ===
+    period = previousBarsCount
+    high_low = high - low
+    high_close = (high - close.shift(1)).abs()
+    low_close = (low - close.shift(1)).abs()
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/period, adjust=False).mean()
+    atr_prev = atr.shift(1)
+
+    # === Elephant Candle Body & Range ===
+    body = (close - open_).abs()
+    range_ = high - low
+    body_pct = body * 100 / range_.replace(0, np.nan)
+
+    # === Elephant Candle Validity ===
+    isGreenElephantCandleValid = (close > open_) & (body_pct >= minBodyPercentage)
+    isRedElephantCandleValid = (close < open_) & (body_pct >= minBodyPercentage)
+
+    # === Elephant Candle Strong ===
+    isGreenElephantCandleStrong = isGreenElephantCandleValid & (body >= atr_prev * searchFactor)
+    isRedElephantCandleStrong = isRedElephantCandleValid & (body >= atr_prev * searchFactor)
+
+    # === Moving Averages (SMA default) ===
+    slowMA = close.rolling(maLength).mean()
+    fastMA = close.rolling(maLengthB).mean()
+
+    # === Trend Direction for Fast MA ===
+    fastMA_diff = fastMA.diff()
+    fastMATrend = pd.Series(np.nan, index=close.index)
+    fastMATrend[fastMA_diff > 0] = 1
+    fastMATrend[fastMA_diff < 0] = -1
+    fastMATrend = fastMATrend.ffill().fillna(0).astype(int)
+
+    # === Trend Direction for Slow MA (kept for completeness) ===
+    slowMA_diff = slowMA.diff()
+    slowMATrend = pd.Series(np.nan, index=close.index)
+    slowMATrend[slowMA_diff > 0] = 1
+    slowMATrend[slowMA_diff < 0] = -1
+    slowMATrend = slowMATrend.ffill().fillna(0).astype(int)
+
+    # === Trend Conditions based on selected strings ===
+    # Bullish: DIRECCION MEDIA RAPIDA ALCISTA -> fastMATrend > 0
+    isFastMATrendBullish = fastMATrend > 0
+    # Bearish: DIRECCION MEDIA RAPIDA BAJISTA -> fastMATrend < 0
+    isFastMATrendBearish = fastMATrend < 0
+
+    # === Final Elephant Candle Conditions ===
+    finalGreenElephantCandle = isGreenElephantCandleStrong & isFastMATrendBullish
+    finalRedElephantCandle = isRedElephantCandleStrong & isFastMATrendBearish
+
+    # === Apply Filters ===
+    resultGreenElephantCandle = finalGreenElephantCandle & activateGreenElephantCandles & (filterType == 'CON FILTRADO DE TENDENCIA')
+    resultRedElephantCandle = finalRedElephantCandle & activateRedElephantCandles & (filterType == 'CON FILTRADO DE TENDENCIA')
+
+    # === ALMA Calculation ===
+    m = int(np.floor(offset * (almaLength - 1)))
+    s = almaLength / sigma
+    weights = np.exp(-1 * (np.arange(almaLength) - m) ** 2 / (2 * s ** 2))
+    weights /= weights.sum()
+    alma = close.rolling(almaLength).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
+
+    # === Price vs ALMA ===
+    isPriceAboveALMA = close > alma
+    isPriceBelowALMA = close < alma
+
+    # === Entry Signals ===
+    long_signal = resultGreenElephantCandle & isPriceAboveALMA & operationMode
+    short_signal = resultRedElephantCandle & isPriceBelowALMA & operationMode
+
+    # === Build Entry List ===
+    entries = []
+    trade_num = 1
+    for i

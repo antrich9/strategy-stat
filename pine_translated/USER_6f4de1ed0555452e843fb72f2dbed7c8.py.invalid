@@ -1,0 +1,6 @@
+df['date'] = pd.to_datetime(df['time'], unit='s').dt.date
+daily_df = df.groupby('date').agg({'high': 'max', 'low': 'min'}).reset_index()
+daily_df.columns = ['date', 'daily_high', 'daily_low']
+daily_df['prev_day_high'] = daily_df['daily_high'].shift(1)
+daily_df['prev_day_low'] = daily_df['daily_low'].shift(1)
+df = df.merge(daily_df[['date', 'prev_day_high', 'prev_day_low']], on='date', how='left')

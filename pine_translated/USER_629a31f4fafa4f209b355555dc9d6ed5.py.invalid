@@ -1,0 +1,8 @@
+def get_prev_day_high_low(df):
+    df = df.copy()
+    df['datetime'] = pd.to_datetime(df['time'], unit='s', utc=True)
+    df['date'] = df['datetime'].dt.date
+    daily = df.groupby('date')['high'].max().reset_index()
+    daily.columns = ['date', 'daily_high']
+    daily['prev_day_high'] = daily['daily_high'].shift(1)
+    daily['prev_day_low'] = df.groupby('date')['low'].min().reset_index()['low'].shift(1)  # Actually compute low similarly.

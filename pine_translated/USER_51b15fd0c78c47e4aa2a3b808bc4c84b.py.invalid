@@ -1,0 +1,112 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    """
+    results = []
+    trade_num = 1
+    
+    lookback_bars = 12
+    threshold = 0.0
+    
+    # Bullish FVG basic detection
+    bull_fvg = (df['low'] > df['high'].shift(2)) & (df['close'].shift(1) > df['high'].shift(2))
+    # Bearish FVG basic detection
+    bear_fvg = (df['high'] < df['low'].shift(2)) & (df['close'].shift(1) < df['low'].shift(2))
+    
+    # Volume filter
+    vol_sma = df['volume'].rolling(9).mean()
+    volfilt = df['volume'].shift(1) > vol_sma * 1.5
+    
+    # ATR filter (Wilder)
+    tr1 = df['high'] - df['low']
+    tr2 = abs(df['high'] - df['close'].shift(1))
+    tr3 = abs(df['low'] - df['close'].shift(1))
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/20, adjust=False).mean()
+    atrfilt_long = (df['low'] - df['high'].shift(2) > atr / 1.5)
+    atrfilt_short = (df['low'].shift(2) - df['high'] > atr / 1.5)
+    atrfilt = atrfilt_long | atrfilt_short
+    
+    # Trend filter (EMA)
+    loc = df['close'].ewm(span=54, adjust=False).mean()
+    loc2 = loc > loc.shift(1)
+    locfiltb = loc2
+    locfilts = ~loc2
+    
+    # Bull FVG with filters
+    bull_fvg_filtered = bull_fvg & volfilt & atrfilt & locfiltb
+    # Bear FVG with filters
+    bear_fvg_filtered = bear_fvg & volfilt & atrfilt & locfilts
+    
+    # Bars since functions
+    def bars_since bull_since Series (series: pd.Series) -> pd.Series:
+        result = pd.Series(np.nan, index=series.index)
+        for i in range(len(series)):
+            if series.iloc[i]:
+                result.iloc[i] = 0
+            elif i > 0 and not pd.isna(result.iloc[i - 1]):
+                result.iloc[i] = result.iloc[i - 1] + 1
+        return result
+    
+    bull_since = bars_since(bull_fvg_filtered)
+    bear_since = bars_since(bear_fvg_filtered)
+    
+    bull_cond_1 = bull_fvg_filtered & (bull_since <= lookback_bars)
+    bear_cond_1 = bear_fvg_filtered & (bear_since <= lookback_bars)
+    
+    for i in range(3, len(df)):
+        bull_since_val = bull_since.iloc[i]
+        if pd.notna(bull_since_val) and bull_cond_1.iloc[i]:
+            try:
+                idx = int(bull_since_val)
+                if idx >= 0 and idx < i:
+                    combined_low_bull = df['high'].iloc[i - idx] if not pd.isna(df['high'].iloc[i - idx]) else np.nan
+                    combined_high_bull = df['low'].iloc[i - idx + 2] if (i - idx + 2) >= 0 and (i - idx + 2) < len(df) and not pd.isna(df['low'].iloc[i - idx + 2]) else np.nan
+                    if not pd.isna(combined_low_bull) and not pd.isna(combined_high_bull):
+                        bull_result = (combined_high_bull - combined_low_bull >= threshold)
+                        if bull_result:
+                            entry_price = df['close'].iloc[i]
+                            results.append({
+                                'trade_num': trade_num,
+                                'direction': 'long',
+                                'entry_ts': int(df['time'].iloc[i]),
+                                'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                                'entry_price_guess': entry_price,
+                                'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+                                'raw_price_a': entry_price,
+                                'raw_price_b': entry_price
+                            })
+                            trade_num += 1
+            except:
+                pass
+        
+        bear_since_val = bear_since.iloc[i]
+        if pd.notna(bear_since_val) and bear_cond_1.iloc[i]:
+            try:
+                idx = int(bear_since_val)
+                if idx >= 0 and idx < i:
+                    combined_high_bear = df['high'].iloc[i - idx] if not pd.isna(df['high'].iloc[i - idx]) else np.nan
+                    combined_low_bear = df['low'].iloc[i - idx + 2] if (i - idx + 2) >= 0 and (i - idx + 2) < len(df) and not pd.isna(df['low'].iloc[i - idx + 2]) else np.nan
+                    if not pd.isna(combined_high_bear) and not pd.isna(combined_low_bear):
+                        bear_result = (combined_high_bear - combined_low_bear >= threshold)
+                        if bear_result:
+                            entry_price = df['close'].iloc[i]
+                            results.append({
+                                'trade_num': trade_num,
+                                'direction': 'short',
+                                'entry_ts': int(df['time'].iloc[i]),
+                                'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                                'entry_price_guess': entry_price,
+                                'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+                                'raw_price_a': entry_price,
+                                'raw_price_b': entry_price
+                            })
+                            trade_num += 1
+            except:
+                pass
+    
+    return results

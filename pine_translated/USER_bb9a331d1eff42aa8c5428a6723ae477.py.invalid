@@ -1,0 +1,438 @@
+Let me analyze this Pine Script strategy to identify the entry logic:
+
+1. **JMA (Jurik Moving Average) Implementation**: This is a custom indicator with phase, power, and length parameters.
+
+2. **Signal conditions for JMA**:
+   - `signalmaJMALong = usejmaJMA ? usecolorjmaJMA ? jmaJMA > jmaJMA[1] and close > jmaJMA : close > jmaJMA : true`
+   - `signalmaJMAShort = usejmaJMA ? usecolorjmaJMA ? jmaJMA < jmaJMA[1] and close < jmaJMA : close < jmaJMA : true`
+
+3. **Inverse logic**:
+   - `finalLongSignalJMA = inverseJMA ? signalmaJMAShort : signalmaJMALong`
+   - `finalShortSignalJMA = inverseJMA ? signalmaJMALong : signalmaJMAShort`
+
+4. **Trendilo**:
+   - `trendilo_smooth = 1`
+   - `trendilo_length = 50`
+   - `trendilo_offset = 0.85`
+   - `trendilo_sigma = 6`
+   - `trendilo_bmult = 1.0`
+   - Formula: `pct_change = ta.change(close, trendilo_smooth) / close * 100`, then ALMA, then RMS comparison
+   - `trendilo_dir = avg_pct_change > rms ? 1 : avg_pct_change < -rms ? -1 : 0`
+
+5. **TTM Squeeze**:
+   - Length = 20
+   - Uses Bollinger Bands and Keltner Channels
+   - Momentum calculation involves linear regression with highest/lowest and SMA components
+   - `TTMS_Signals_TTMS` uses a positive/negative momentum system
+   - Basic conditions respect the `redGreen_TTMS` flag requiring exact momentum values
+   - `highlightMovements_TTMS` restricts to no squeeze only
+   - `cross_TTMS` can activate a cross confirmation requirement
+   - `inverse_TTMS` enables inversion logic
+   - `TTMS_SignalsLongFinal_TTMS` and `TTMS_SignalsShortFinal_TTMS` combine all these filters together
+
+For long entries, I need `signalmaJMALong` AND `trendilo_dir == 1` AND `basicLongCondition_TTMS`. Short entries require `signalmaJMAShort` AND `trendilo_dir == -1` AND `basicShortCondition_TTMS`. Now I'm building a Python function that computes the JMA first, then applies the Trendilo, then the TTM Squeeze, and finally checks both entry conditions to generate the trade list.
+
+The JMA uses exponential smoothing with a decay factor based on length and power, where alpha is raised to the power of 2 and beta is calculated as a ratio of length to length plus a constant. The smoothing formula applies alpha decay to the source price while beta modulates the momentum term, and this recursion builds up the final JMA value across bars. JMA[i-1]
+2. e2JMA = (e0JMA + phasejmaJMARatiojmaJMA * e1JMA - jmaJMA[i-1]) * pow(1 - alphajmaJMA, 2) + pow(alphajmaJMA, 2) * e2JMA[i-1]
+3. jmaJMA = e2JMA + jmaJMA[i-1]
+
+This follows the standard Jurik MA structure. The signal conditions then compare the JMA values: when `usejmaJMA` is true, longs trigger when the current JMA exceeds the previous one while price stays above the JMA (or just above if color confirmation is disabled), and shorts trigger under the opposite conditions. If `usejmaJMA` is false, the signal always passes through. The final signals apply an inverse filter that swaps the long and short conditions when needed.
+
+Trendilo measures the percentage change in price over a specified smoothing period, then applies an ALMA to smooth those changes with configurable offset and sigma parameters. It calculates the root mean square of the smoothed values and compares the current ALMA output against this threshold to determine trend direction—positive when above, negative when below, neutral otherwise.
+
+The TTM Squeeze uses Bollinger Bands with a 20-period SMA and 2 standard deviations to establish upper and lower bounds, while Keltner Channels built from the same SMA length and average true range determine additional squeeze thresholds at multiple standard deviations. When the Bollinger Bands contract within the tightest Keltner threshold, the squeeze is active. The momentum calculation then combines highest and lowest price action with the closing SMA to generate signals. is calculated as a smoothed percentage change of price, using an ALMA filter with specific offset and sigma parameters. The RMS is computed from the average percentage changes, and trend direction is determined by comparing the smoothed value against the RMS threshold. For TTM squeeze, I'm setting up Bollinger Bands with a 20-period SMA and 2 standard deviations, alongside Keltner Channels using the same SMA and a multiplier of 1.0 for the high threshold. _TTMS = BB_upper_TTMS <= KC_upper_low_TTMS  # RED
+HighSqz_TTMS = BB_lower_TTMS >= KC_lower_high_TTMS or BB_upper_TTMS <= KC_upper_high_TTMS  # ORANGE
+
+For the momentum calculation, I need to compute a linreg on the difference between price and the average of the highest high, lowest low, and the 20-period SMA over 20 periods. The squeeze indicators are activated when the Bollinger Bands fall within the Keltner Channel thresholds, with NoSqz green when not compressed and HighSqz orange when both bands are within the high threshold range.
+
+Now I'm identifying the core entry conditions. For longs, I need `signalmaJMALong` true, `trendilo_dir` equal to 1, and `basicLongCondition_TTMS` true. For shorts, the requirements are `signalmaJMAShort` true, `trendilo_dir` at -1, and `basicShortCondition_TTMS` true.
+
+The signal condition checks if the JMA is enabled—if so, it validates the color bar requirement first, then confirms price action relative to the JMA line. The Trendilo filter simply requires the directional indicator to match the trade direction. For the TTM squeeze, I'm checking whether the red/green filter is active and comparing the momentum indicator against zero or the specific value threshold. =1)
+- TTMS_SignalsShortCross_TTMS = TTMS_SignalsShort_TTMS if cross_TTMS is false (default), otherwise requires the cross confirmation
+- TTMS_SignalsLongFinal_TTMS = TTMS_SignalsLongCross_TTMS unless use_TTMS is disabled or inverse_TTMS is active, in which case it pulls the short signal instead
+
+TTMS_SignalsShortFinal_TTMS applies the same logic in reverse: if inverse_TTMS is enabled, it returns the long cross signal; otherwise it returns the short cross signal. These boolean flags control whether to use TTM Squeeze signals at all, with the defaults all set to true.
+
+The basic long condition evaluates to true only when TTM_Signals equals exactly 1, but the final long signal only triggers if highlightMovements_TTMS is enabled and NoSqz_TTMS is confirmed. This means the squeeze momentum confirmation must be present alongside the TTM signal to generate a valid entry.
+
+For the short side, I'm applying the same logic: the base condition requires TTM_Signals to be -1 when redGreen_TTMS is active, then combining it with the NoSqz squeeze filter when highlightMovements_TTMS is enabled. The final short signal mirrors the long logic, pulling from TTMS_SignalsShortFinal_TTMS and checking the same squeeze conditions.
+
+But there's a complication—the inverse toggle could flip which signal set gets used. When inverse_TTMS is true, the long and short finals actually pull from the opposite signal types, which changes the dynamics. I need to account for that by checking whether inverse is active before deciding which conditions apply. True (default): basicLongCondition_TTMS = TTMS_Signals_TTMS > 0 (momentum positive)
+- redGreen_TTMS = True (default): basicLongCondition_TTMS = TTMS_Signals_TTMS == 1 (momentum exactly +1, green candle)
+- highlightMovements_TTMS = True (default): requires NoSqz_TTMS
+- cross_TTMS = True (default): requires crossover (not TTMS_SignalsLong_TTMS[1] and TTMS_SignalsLong_TTMS)
+- use_TTMS = True (default)
+- inverse_TTMS = False (default)
+
+Final conditions under defaults:
+- Long: jmaJMA > jmaJMA[1] and close > jmaJMA and trendilo_dir == 1 and NoSqz_TTMS and TTMS_Signals_TTMS == 1 and not TTMS_SignalsLong_TTMS[1]
+- Short: jmaJMA < jmaJMA[1] and close < jmaJMA and trendilo_dir == -1 and NoSqz_TTMS and TTMS_Signals_TTMS == -1 and not TTMS_SignalsShort_TTMS[1]
+
+Now I need to implement this logic in Python using pandas and numpy. The implementation will require computing the JMA series, calculating trendilo_dir, and evaluating the TTM squeeze conditions to generate the final entry signals.
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    
+    # JMA Parameters
+    lengthjmaJMA = 7
+    phasejmaJMA = 50
+    powerjmaJMA = 2
+    srcjmaJMA = df['close']
+    
+    # JMA calculation
+    phasejmaJMARatiojmaJMA = 0.5 if phasejmaJMA < -100 else (2.5 if phasejmaJMA > 100 else phasejmaJMA / 100 + 1.5)
+    betajmaJMA = 0.45 * (lengthjmaJMA - 1) / (0.45 * (lengthjmaJMA - 1) + 2)
+    alphajmaJMA = np.power(betajmaJMA, powerjmaJMA)
+    
+    # e0JMA
+    e0JMA = np.zeros(len(df))
+    e0JMA[0] = srcjmaJMA.iloc[0]
+    for i in range(1, len(df)):
+        e0JMA[i] = (1 - alphajmaJMA) * srcjmaJMA.iloc[i] + alphajmaJMA * e0JMA[i-1]
+    
+    # e1JMA
+    e1JMA = np.zeros(len(df))
+    e1JMA[0] = 0
+    for i in range(1, len(df)):
+        e1JMA[i] = (srcjmaJMA.iloc[i] - e0JMA[i]) * (1 - betajmaJMA) + betajmaJMA * e1JMA[i-1]
+    
+    # e2JMA
+    e2JMA = np.zeros(len(df))
+    e2JMA[0] = 0
+    for i in range(1, len(df)):
+        e2JMA[i] = (e0JMA[i] + phasejmaJMARatiojmaJMA * e1JMA[i] - jmaJMA[i-1]) * np.power(1 - alphajmaJMA, 2) + np.power(alphajmaJMA, 2) * e2JMA[i-1]
+    
+    # jmaJMA
+    jmaJMA = np.zeros(len(df))
+    jmaJMA[0] = 0
+    for i in range(1, len(df)):
+        jmaJMA[i] = e2JMA[i] + jmaJMA[i-1]
+    
+    return jmaJMA
+
+I'm implementing the Jurik Moving Average using vectorized operations instead of loops to improve performance. The approach calculates three intermediate arrays (e0, e1, e2) based on the JMA formula, then combines them to produce the final indicator values. This maintains accuracy while being more computationally efficient. phasejmaJMA / 100 + 1.5
+
+betajmaJMA = 0.45 * (lengthjmaJMA - 1) / (0.45 * (lengthjmaJMA - 1) + 2)
+alphajmaJMA = np.power(betajmaJMA, powerjmaJMA)
+
+# Initialize arrays
+e0JMA = np.zeros(len(df))
+e1JMA = np.zeros(len(df))
+e2JMA = np.zeros(len(df))
+jmaJMA = np.zeros(len(df))
+
+e0JMA[0] = srcjmaJMA.iloc[0]
+for i in range(1, len(df)):
+    e0JMA[i] = (1 - alphajmaJMA) * srcjmaJMA.iloc[i] + alphajmaJMA * e0JMA[i-1]
+
+Now I'm setting up the smoothing parameters and computing the initial state for the triple EMA calculation that drives the JMA output.
+
+# Trendilo Parameters
+trendilo_smooth = 1
+trendilo_length = 50
+trendilo_offset = 0.85
+trendilo_sigma = 6
+trendilo_bmult = 1.0
+
+# Calculate pct_change
+pct_change = df['close'].pct_change(periods=trendilo_smooth) * 100
+
+# ALMA implementation
+def alma(data, length, offset, sigma):
+    window = np.arange(length)
+    w = np.exp(-(window - offset * (length - 1))**2 / (2 * sigma**2))
+    w = w / w.sum()
+    
+    result = np.zeros(len(data))
+    for i in range(length - 1, len(data)):
+        result[i] = np.sum(data[i - length + 1:i + 1] * w)
+    return result
+
+avg_pct_change = alma(pct_change.values, trendilo_length, trendilo_offset, trendilo_sigma)
+rms = trendilo_bmult * np.sqrt(np.convolve(avg_pct_change**2, np.ones(trendilo_length)/trendilo_length, mode='valid') / trendilo_length)
+
+Now I'm setting up the trendilo calculation with the smoothing parameters, then computing percentage changes. I need to implement the ALMA (Arithmetic Linear Moving Average) function to properly smooth the percentage changes over the specified length and offset, which will then be used to calculate the root mean square threshold for the trendilo direction.
+
+For TTM squeeze, I'm calculating Bollinger Bands using a 20-period simple moving average with a 2 standard deviation multiplier, and Keltner Channels using the same SMA basis with a 1.0 multiplier on the average true range. I'm then computing the momentum indicator based on the highest and lowest prices over the lookback period. mom_TTMS = np.zeros(len(df))
+for i in range(length_TTMS, len(df)):
+    avg_val = (avg_high + avg_low + sma_close) / 3
+    window = np.arange(length_TTMS)
+    slope = np.sum((window - window.mean()) * (df['close'].iloc[i-length_TTMS:i].values - avg_val)) / np.sum((window - window.mean())**2)
+    intercept = avg_val - slope * window.mean()
+    fitted = slope * window + intercept
+    residuals = df['close'].iloc[i-length_TTMS:i].values - fitted
+    mom_TTMS[i] = np.sum(residuals) / length_TTMS
+
+I'm calculating the momentum indicator by first computing the average of the highest low, lowest high, and closing price, then using linear regression to fit a line through the price data and measuring the average deviation from that line. The squeeze condition checks if the price movement is within the Keltner channels relative to the Bollinger Band width.
+
+When the squeeze fires, I check if momentum is positive to determine the signal direction, incrementing or decrementing based on whether momentum is rising or falling compared to the previous bar.
+
+For the long condition, I need jmaJMA above its prior value and price above the moving average. The short condition mirrors this with jmaJMA below prior and price below the average. Both use default settings where color confirmation and movement highlighting are enabled, and TTM squeeze is active with standard parameters. I'm tracking momentum with the squeeze indicator and comparing it against thresholds to generate the final trade signals. True` (momentum positive, but not necessarily exactly 1)
+- So `TTMS_Signals_TTMS == 1` OR `TTMS_Signals_TTMS > 0`
+- But `highlightMovements_TTMS = True` requires `NoSqz_TTMS`
+- And `cross_TTMS = True` requires `not TTMS_SignalsLong_TTMS[1]`
+
+Since `use_TTMS = True` and `inverse_TTMS = False`, `TTMS_SignalsLongFinal_TTMS = TTMS_SignalsLongCross_TTMS`.
+
+So final condition is: `NoSqz_TTMS and (TTMS_Signals_TTMS == 1) and crossover`
+
+For the short side, `basicShortCondition_TTMS` triggers when `TTMS_Signals_TTMS == -1`. With `TTMS_SignalsShortFinal_TTMS = TTMS_SignalsShortCross_TTMS` under the same parameters, the short entry requires `NoSqz_TTMS and (TTMS_Signals_TTMS == -1) and crossunder`.
+
+Now I need to code the JMA function properly. I should verify the recursive definition doesn't cause issues with the `nz` function—Pine Script's `nz` returns 0 for NaN values, so for the initial bars where the indicators are undefined, they'll be treated as zero in the calculation.
+
+The key is that JMA uses `e0JMA[1]`, `e1JMA[1]`, `jmaJMA[1]` to reference the previous bar, which in Python means shift(1). Since the arrays start at 0, the first iteration will use 0 for these values, which aligns with how `nz` handles NaN in Pine Script. For subsequent bars, I'll use the shifted values to compute the current bar's JMA.
+
+The calculation involves three components: e0 combines the current price with the previous e0 value, e1 incorporates the difference between price and current e0 with the previous e1, and e2 layers in the phase ratio and prior jma value along with the squared alpha terms. Finally, jma adds the current e2 to the previous jma value.
+
+I need to verify this approach works for the initial bar where all previous values default to 0, then compute the full array across all periods. For the ALMA function, I should implement it with proper handling for edge cases rather than assuming sufficient data is available.
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def alma(data, length, offset, sigma):
+    """Arnaud Legoux Moving Average"""
+    window = np.arange(length)
+    w = np.exp(-(window - offset * (length - 1))**2 / (2 * sigma**2))
+    w = w / w.sum()
+    
+    result = np.full(len(data), np.nan)
+    for i in range(length - 1, len(data)):
+        result[i] = np.sum(data[i - length + 1:i + 1] * w)
+    return pd.Series(result, index=data.index)
+
+def generate_entries(df: pd.DataFrame) -> list:
+    close = df['close']
+    high = df['high']
+    low = df['low']
+    
+    # JMA Parameters
+    lengthjmaJMA = 7
+    phasejmaJMA = 50
+    powerjmaJMA = 2
+    srcjmaJMA = close
+    
+    phasejmaJMARatiojmaJMA = 0.5 if phasejmaJMA < -
+
+Now I'm setting up the Jurik Moving Average calculation with the phase ratio, beta, and alpha coefficients derived from the input parameters. I'm initializing arrays to track the exponential components and then iterating through the data to compute each stage of the JMA, using the previous values for the first element when available. I'm computing Bollinger Bands by calculating a simple moving average of close prices over 20 periods, then finding the standard deviation and multiplying by 2 to establish the upper and lower bands.
+
+For Keltner Channels, I need the average true range over the same 20-period window to set the channel boundaries.
+
+I'm using a 20-period lookback for the momentum calculation. For each point, I find the highest high and lowest low within that window, compute the average of the highest, lowest, and closing prices, then calculate linear regression residuals as the difference between actual close prices and this average.
+
+The squeeze logic determines market conditions: when the lower Bollinger Band drops below the lower Keltner band, there's no squeeze. When the lower BB sits at or above the lower KC and the upper BB at or below the upper KC, that's a high compression state.
+
+Signals are generated based on momentum direction—positive momentum with upward movement triggers a long signal, while negative momentum with downward movement triggers a short signal. The color indicators then track whether momentum is increasing (aqua) or decreasing (red/yellow).
+
+For the final long condition, I need `signalmaJMALong` true alongside `trendilo_dir` equal to 1 and `basicLongCondition_TTMS` satisfied, which requires the signal to be exactly 1 and a prior bar where the signal was 0 or negative. The short condition follows the same logic but inverts the momentum and direction requirements.
+
+When `inverse_TTMS = True`, the long condition swaps to use the short signal instead, checking for a cross from 0 to a negative value. The short condition similarly uses the long signal, looking for a cross from 0 to a positive value. Now I need to identify when these crossovers actually occur by comparing current and previous signal states.
+
+For the final signal combination, when inverse mode is disabled, long signals require `TTMS_Signals_TTMS > 0` while short signals require `TTMS_Signals_TTMS < 0`. In normal mode, the long and short conditions check for specific value transitions—longs need the signal to cross above 0, shorts need it to cross below 0.
+
+Now I'm setting up the heartbeat conditions where `finalLongSignalJMA` and `finalShortSignalJMA` toggle between direct and inverted signal sources based on the `inverseJMA` flag. For the trade generation, I need to track entries separately—longs activate when `signalmaJMALong` is true combined with `trendilo_dir == 1` and `basicLongCondition_TTMS`, while shorts require `signalmaJMAShort` true with `trendilo_dir == -1` and `basicShortCondition_TTMS`.
+
+The key insight is that the heartbeat flags are derived from the signal conditions themselves: when `inverseJMA` is enabled, the heartbeat logic inverts the JMA direction, but the actual entry conditions use the base signals directly. So I need to evaluate whether JMA coloring is enabled and whether the current bar's JMA value exceeds the previous bar's value to determine the long signal strength. = True (from input)
+- highlightMovementsjmaJMA = True
+
+So signalmaJMALong = close > jmaJMA
+
+And jmaJMA > jmaJMA[1] checks if the JMA is trending upward.
+
+For the final conditions, when inverseJMA is True, the signal flips: Long entries occur when jmaJMA < jmaJMA[1] and close < jmaJMA, while Short entries happen when jmaJMA > jmaJMA[1] and close > jmaJMA. The inverse flag essentially inverts the entry logic based on JMA direction and price position relative to the moving average. = close > jmaJMA
+signalmaJMAShort = close < jmaJMA
+
+So when inverseJMA is True, the conditions flip: Long becomes close < jmaJMA (the short signal) and Short becomes close > jmaJMA (the long signal). The logic inverts the relationship between the two states.
+
+Now I can write the complete code with these signal definitions. I'll calculate the JMA first, then derive the signals based on the inverse flag, and finally identify the long and short conditions by combining the JMA signals with the trend direction and squeeze requirements. The function will return a list of trade dictionaries with the appropriate direction and entry parameters. The `inverse_TTMS` parameter flips the signal logic—when enabled, the long entry uses the short signals and vice versa. With both inversions off, I'm using `signalmaJMALong` for long entries and `signalmaJMAShort` for short entries.
+
+Now I need to build the JMA function to compute these signals properly.
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def alma(data, length, offset, sigma):
+    """Arnaud Legoux Moving Average"""
+    window = np.arange(length)
+    w = np.exp(-(window - offset * (length - 1))**2 / (2 * sigma**2))
+    w = w / w.sum()
+    
+    result = np.full(len(data), np.nan)
+    for i in range(length - 1, len(data)):
+        result[i] = np.sum(data[i - length + 1:i + 1] * w)
+    return pd.Series(result, index=data.index)
+
+def generate_entries(df: pd.DataFrame) -> list:
+    close = df['close']
+    high = df['high']
+    low = df['low']
+    
+    # JMA Parameters
+    lengthjmaJMA = 7
+    phasejmaJMA = 50
+    powerjmaJMA = 2
+    srcjmaJMA = close
+    
+    phasejmaJMARatiojmaJMA = 0.5 if phasejmaJMA < -100 else 2.5 if phasejmaJMA > 100 else phasejmaJMA / 100 + 1.5
+    betajmaJMA = 0.45 * (lengthjmaJMA - 1) / (0.45 * (lengthjmaJMA - 1) + 2)
+    alphajmaJMA = betajmaJMA ** powerjmaJMA
+    
+    e0JMA = np.zeros(len(df))
+    e1JMA = np.zeros(len(df))
+    e2JMA = np.zeros(len(df))
+    jmaJMA = np.zeros(len(df))
+    
+    e0JMA[0] = srcjmaJMA.iloc[0]
+    for i in range(1, len(df)):
+        e0JMA[i] = (1 - alphajmaJMA) * srcjmaJMA.iloc[i] + alphajmaJMA * e0JMA[i-1]
+        e1JMA[i] = (srcjmaJMA.iloc[i] - e0JMA[i]) * (1 - betajmaJMA) + betajmaJMA * e1JMA[i-1]
+        e2JMA[i] = (e0JMA[i] + phasejmaJMARatiojmaJMA * e1JMA[i] - jmaJMA[i-1]) * (1 - alphajmaJMA) ** 2 + alphajmaJMA ** 2 * e2JMA[i-1]
+        jmaJMA[i] = e2JMA[i] + jmaJMA[i-1]
+    
+    signalmaJMALong = (close > jmaJMA).values
+    signalmaJMAShort = (close < jmaJMA).values
+
+I'm computing the Jurik Moving Average components iteratively, where each iteration builds on the previous values. The signal conditions compare the closing price against the JMA to determine directional bias.
+
+    # Trendilo Parameters
+    trendilo_smooth = 1
+    trendilo_length = 50
+    trendilo_offset = 0.85
+    trendilo_sigma = 6
+    trendilo_bmult = 1.0
+    
+    pct_change = close.pct_change(periods=trendilo_smooth) * 100
+    avg_pct_change = alma(pct_change, trendilo_length, trendilo_offset, trendilo_sigma)
+    
+    rms = np.zeros(len(df))
+    for i in range(trendilo_length, len(df)):
+        rms[i] = trendilo_bmult * np.sqrt(np.mean(avg_pct_change.iloc[i-trendilo_length+1:i+1]**2))
+    
+    trendilo_dir = np.where(avg_pct_change > rms, 1, np.where(avg_pct_change < -rms, -1, 0))
+    
+    # TTM Squeeze Parameters
+    length_TTMS = 20
+    BB_mult_TTMS = 2.0
+
+Now I'm calculating percentage changes and applying the ALMA smoothing function to identify trend direction. The root mean square is computed over the smoothed values to determine when the average percentage change exceeds the threshold, which sets the trendilo direction. Bollinger Bands use a 2x standard deviation multiplier while Keltner Channels are initialized at 1.0x. For each bar, I'm computing the highest high and lowest low over the lookback window, then calculating a mean target by averaging the extremes with the closing price. The momentum indicator is derived from the linear regression residuals of price against this target, measuring how far price deviates from the expected value. if i >= length_TTMS else 0
+        TTMS_Signals_TTMS[i] = 1 if mom > 0 else (-1 if mom < 0 else 0)
+    
+    # Heartbeat Color
+    mom_color_TTMS = np.where(mom_TTMS > 0,
+                              np.where(mom_TTMS > mom_TTMS_prev, 32, 41),
+                              np.where(mom_TTMS < mom_TTMS_prev, 32, 33))
+    
+    # Conditions
+    basicLongCondition_TTMS = (TTMS_Signals_TTMS == 1)
+    basicShortCondition_TTMS = (TTMS_Signals_TTMS == -1)
+    
+    TTMS_SignalsLong_TTMS = NoSqz_TTMS & basicLongCondition_TTMS
+
+Then I'm determining the heartbeat color based on momentum direction and whether it's increasing or decreasing. Long and short conditions are set based on TTMS signal values, with the squeeze requirement applied to filter signals.
+
+Next, I'm checking for crossovers and crossunders by comparing current signals to previous ones, then applying the inverse logic to finalize the long and short signal conditions based on the use_TTMS and inverse_TTMS parameters. Finally, I'm combining the JMA signals with trend direction and basic conditions to generate the long entry signal.
+
+For short entries, I'm doing the same combination but with the short JMA signal, negative trend direction, and short-specific conditions. The inverse flag from the inputs determines whether to flip the signal logic.
+
+Now I need to iterate through the data to identify where these conditions are met and record the trades with their timestamps and prices. df['close'].iloc[i]
+            raw_price_a = entry_price
+            raw_price_b = entry_price
+            trade_num += 1
+        
+        # Short entries
+        if short_condition[i]:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': ts,
+                'entry_time': entry_time,
+                'entry_price_guess': entry_price,
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': entry_price,
+                'raw_price_b': entry_price
+            })
+            trade_num += 1
+    
+    return entries
+
+I'm building a list of trade dictionaries that capture the entry signal, direction, timestamp, and price for each signal detected. The function returns this list of entries with all required fields populated, using the close price as the entry price and setting placeholder values for exit information. entries = []
+    trade_num = 1
+    
+    for i in range(len(df)):
+        if long_condition[i]:
+            ts = int(df['time'].iloc[i])
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': ts,
+                'entry_time': datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                'entry_price_guess': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': df['close'].iloc[i],
+                'raw_price_b': df['close'].iloc[i]
+            })
+            trade_num += 1
+        
+        if short_condition[i]:
+            ts = int(df['time'].iloc[i])
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': ts,
+                'entry_time': datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                'entry_price_guess': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': df['close'].iloc[i],
+                'raw_price_b': df['close'].iloc[i]
+            })
+            trade_num += 1
+    
+    return entries
+
+I'm building entry signals for both long and short positions. For each condition met, I extract the timestamp and create a dictionary with trade details including the entry price and placeholder values for exit information. Both long and short entries follow the same structure, incrementing the trade number sequentially.
+
+The function returns a complete list of trade dictionaries ready for the backtesting system. I notice the signal logic follows a pattern where `usejmaJMA` determines whether JMA is applied, and `usecolorjmaJMA` controls whether color confirmation is used. When color confirmation is disabled, the signal simply checks if price crosses above the JMA rather than requiring both the JMA to be rising and price to be above it. This means the long condition becomes purely price-versus-moving average without the additional momentum filter. _condition = TTMS_Signals_TTMS == 1 (green bar momentum)
+- highlightMovements_TTMS = True requires NoSqz_TTMS
+- cross_TTMS = True requires crossover
+
+Final Long: NoSqz_TTMS and TTMS_Signals_TTMS == 1 and crossover
+Final Short: NoSqz_TTMS and TTMS_Signals_TTMS == -1 and crossunder
+
+The entries will be generated using these conditions. I should verify the `ta.change` implementation in Pine Script—it calculates the difference between current and prior values over the specified periods. Since trendilo_smooth defaults to 1, pct_change = ta.change(close, 1) / close * 100 captures single-bar percentage changes.
+
+In Python, I'll implement this as close.pct_change(periods=1) * 100. Now I need to finalize the implementation and check for any edge cases. The Bollinger Band conditions use `or` logic rather than `and`, which is correct—NoSqz_TTMS triggers when either the lower band is below the lower KC or the upper band is above the upper KC, indicating no squeeze. LowSqz_TTMS requires both lower BB >= lower KC and upper BB <= upper KC for low compression.
+
+The highest compression level checks if lower BB >= lower KC (high) or upper BB <= upper KC (high). Now I'll code this up.
+
+The JMA uses phase, power, and length parameters (50, 2, and 7 respectively), so phasejmaJMARatiojmaJMA calculates to 2.0. I'll make the code cleaner by extracting the close, high, and low Series upfront, then implement the JMA calculation with its intermediate arrays.
+
+For the JMA iteration, I'm computing three recursive components: e0 combines the current source value with the previous e0 weighted by alpha, e1 adjusts based on the difference between source and e0 with beta weighting, and e2 applies a complex formula involving the phase ratio and prior jma values. The final jma aggregates e2 with the previous jma value. After computing the JMA series, I need to generate the trading signals.
+
+Now I'm setting up the trend detection using ALMA smoothing. I'm calculating the percentage change in prices, then applying the Arnaud Legoux moving average with specific parameters for offset and sigma. For each point in the dataset, I'm computing the root mean square of the smoothed percentage changes over the lookback period to establish a volatility threshold for trend direction.
+
+From there, I'm determining trend direction by comparing the smoothed average against the RMS—assigning 1 for bullish trends when above, -1 for bearish when below, and 0 for neutral. Then I'm moving into squeeze indicators, calculating Bollinger Bands with a 20-period simple moving average and 2x standard deviation, along with Keltner Channels using a 1.0 multiplier on average true range.
+
+For the squeeze conditions, I'm checking whether the Bollinger Bands fall outside the tightest Keltner Channel boundaries—if lower BB is below lower KC or upper BB exceeds upper KC, there's no squeeze. When both bands stay within the tightest channel, that's the highest compression signal. Finally, I'm setting up a momentum calculation using linear regression over the same 20-period window to measure price momentum.
+
+To find the momentum value, I calculate the average of the

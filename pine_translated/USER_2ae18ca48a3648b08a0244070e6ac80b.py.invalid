@@ -1,0 +1,5 @@
+hl2 = (df['high'] + df['low']) / 2
+     Filt2 = pd.Series(np.nan, index=df.index)
+     Filt2.iloc[:3] = hl2.iloc[:3]
+     for i in range(3, len(df)):
+         Filt2.iloc[i] = coef1 * hl2.iloc[i] + coef2 * Filt2.iloc[i-1] + coef3 * Filt2.iloc[i-2]

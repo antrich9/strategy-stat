@@ -1,0 +1,19 @@
+# Calculate price change percentage
+pch = (src - src.shift(smooth)) / src * 100
+
+# ALMA calculation
+def alma(src, length, offset, sigma):
+    m = np.arange(length)
+    w = np.exp(-((m - offset * (length - 1)) ** 2) / (2 * sigma ** 2))
+    w = w / w.sum()
+    return pd.Series(w).dot(src.rolling(length).apply(lambda x: pd.Series(x).dot(w), raw=True))
+
+# Calculate ALMA of price change
+avpch = alma(pch, length, offset, sigma)
+
+# RMS calculation
+blength = blen if cblen else length
+rms = bmult * np.sqrt((avpch ** 2).rolling(blength).sum() / blength)
+
+# Trend direction
+cdir = np.where(avpch > rms, 1, np.where(avpch < -rms, -1, 0))

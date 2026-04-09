@@ -1,0 +1,102 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    df = df.copy()
+    df['time'] = pd.to_datetime(df['time'], unit='s')
+    
+    results = []
+    trade_num = 1
+    
+    n = len(df)
+    if n < 10:
+        return results
+    
+    # Pre-allocate arrays for indicators
+    h4_high = np.full(n, np.nan)
+    h4_low = np.full(n, np.nan)
+    h4_close = np.full(n, np.nan)
+    h4_open = np.full(n, np.nan)
+    
+    h4_high_prev = np.full(n, np.nan)
+    h4_low_prev = np.full(n, np.nan)
+    h4_high_prev2 = np.full(n, np.nan)
+    h4_low_prev2 = np.full(n, np.nan)
+    
+    swing_high = np.full(n, False)
+    swing_low = np.full(n, False)
+    last_swing_type = ['none'] * n
+    
+    bull_fvg = np.full(n, False)
+    bear_fvg = np.full(n, False)
+    
+    bias = np.zeros(n)
+    
+    # Process each bar
+    for i in range(n):
+        curr_time = df['time'].iloc[i]
+        period_start = curr_time.floor('4H')
+        
+        # Get current 4H bar data
+        mask = (df['time'] >= period_start) & (df['time'] < period_start + pd.Timedelta hours=4))
+        if mask.sum() > 0:
+            h4_high[i] = df.loc[mask, 'high'].max()
+            h4_low[i] = df.loc[mask, 'low'].min()
+            h4_close[i] = df.loc[mask, 'close'].iloc[-1]
+            h4_open[i] = df.loc[mask, 'open'].iloc[0]
+        
+        # Get previous 4H bar data
+        prev_period_start = period_start - pd.Timedelta(hours=4)
+        prev_mask = (df['time'] >= prev_period_start) & (df['time'] < period_start)
+        if prev_mask.sum() > 0:
+            h4_high_prev[i] = df.loc[prev_mask, 'high'].max()
+            h4_low_prev[i] = df.loc[prev_mask, 'low'].min()
+        
+        # Detect swing high/low
+        if i >= 2 and not np.isnan(h4_high_prev2[i]) and not np.isnan(h4_high_prev[i]) and not np.isnan(h4_high[i]):
+            if h4_high[i] < h4_high_prev[i] and h4_high_prev[i] > h4_high_prev2[i]:
+                swing_high[i] = True
+            if h4_low[i] > h4_low_prev[i] and h4_low_prev[i] < h4_low_prev2[i]:
+                swing_low[i] = True
+        
+        # Store for next iteration
+        h4_high_prev2[i] = h4_high_prev[i] if not np.isnan(h4_high_prev[i]) else np.nan
+        h4_low_prev2[i] = h4_low_prev[i] if not np.isnan(h4_low_prev[i]) else np.nan
+        
+        # Calculate FVG
+        if i >= 2:
+            if h4_low[i] > h4_high_prev[i]:
+                bull_fvg[i] = True
+            if h4_high[i] < h4_low_prev[i]:
+                bear_fvg[i] = True
+        
+        # Determine bias
+        if i > 0:
+            if bull_fvg[i]:
+                bias[i] = 1
+            elif bear_fvg[i]:
+                bias[i] = -1
+            else:
+                bias[i] = bias[i-1]
+    
+    # Generate entries based on swing and FVG alignment
+    for i in range(n):
+        if swing_high[i] and bull_fvg[i] and bias[i] == 1:
+            results.append({
+                'index': i,
+                'type': 'long',
+                'swing': 'high',
+                'price': h4_high[i],
+                'confidence': 1.0
+            })
+        if swing_low[i] and bear_fvg[i] and bias[i] == -1:
+            results.append({
+                'index': i,
+                'type': 'short',
+                'swing': 'low',
+                'price': h4_low[i],
+                'confidence': 1.0
+            })
+    
+    return results

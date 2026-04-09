@@ -1,0 +1,9 @@
+PP = 5
+# Ensure enough length
+n = len(df)
+high = df['high'].values
+low = df['low'].values
+
+# Compute pivots using rolling max/min
+# For i from PP to n-PP-1 (i inclusive), check if high[i] == max over i-PP:i+PP+1
+# Use shift and rolling.

@@ -1,0 +1,673 @@
+The user wants me to convert the ENTRY LOGIC ONLY from a Pine Script strategy into a Python function called `generate_entries`.
+
+Let me analyze the Pine Script to identify the entry logic:
+
+1. The strategy uses Heiken Ashi smoothed values
+2. It uses pivot points for support (pl) and resistance (ph)
+3. It detects breakouts (cu for support/lower box, co for resistance/upper box)
+4. It detects retests (s1-s4 for support retests, r1-r4 for resistance retests)
+5. It has a trade direction input (Long, Short, Both)
+
+Looking at the entry logic:
+- For long entries: it seems to trigger on support breakouts (cu) and then retests
+- For short entries: it seems to trigger on resistance breakouts (co) and then retests
+
+But wait, I need to find where the actual `strategy.entry()` calls are. Let me look more carefully...
+
+Actually, the Pine Script provided doesn't show explicit `strategy.entry()` calls in the snippet. It shows:
+- Breakout detection (cu, co)
+- Retest detection (sRetValid, rRetValid)
+
+But the strategy might be using these signals for entries. Let me check the full logic:
+
+Looking at the code:
+- `cu` = crossunder(close, box.get_bottom(sBox)) - price crosses below support box bottom (downward breakout of support)
+- `co` = crossover(close, box.get_top(rBox)) - price crosses above resistance box top (upward breakout of resistance)
+
+For retests:
+- Long entries likely come from: support breakout (cu) followed by retest (sRetValid)
+- Short entries likely come from: resistance breakout (co) followed by retest (rRetValid)
+
+Actually, looking more carefully:
+- `sBreak` is set when `cu` occurs (breakout below support)
+- `rBreak` is set when `co` occurs (breakout above resistance)
+
+
+- `sRetValid` represents a retest condition following a support breakout (bullish scenario)
+- `rRetValid` represents a retest condition following a resistance breakout (bearish scenario)
+
+So the entry logic appears to be:
+- LONG: sBreak detected and then sRetValid occurs
+- SHORT: rBreak detected and then rRetValid occurs
+
+Let me trace through the logic more carefully:
+
+The `retestCondition` function checks if `barssince(na(breakout))` exceeds the input_retSince threshold and the price action satisfies the retest criteria. The `retestEvent` function then evaluates the retest conditions to determine when valid entry opportunities occur based on whether we're looking at a pivot high or pivot low scenario.
+
+The breakout flags are set when price crosses the box boundaries (cu for support, co for resistance), and sRetValid/rRetValid are generated through the retestEvent function to identify confirmation of the breakout retests.
+
+For entries, the logic appears to be:
+- Long entry: sRetValid occurs (retest after support breakout)
+- Short entry: rRetValid occurs (retest after resistance breakout)
+- Trade direction is controlled by the input parameter
+
+The entry conditions are:
+- If tradeDirection == "Long" or "Both": emit long when sRetValid is true
+- If tradeDirection == "Short" or "Both": emit short when rRetValid is true
+
+I'll implement this by calculating the Heiken Ashi values, identifying the pivot points, detecting breakouts, tracking retests, and generating the appropriate entries based on the trade direction setting.
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    
+    # Parameters (using defaults from Pine Script)
+    atrLength = 14
+    atrMultiplier = 1.5
+    takeProfitRatio = 1.5
+    tradeDirection = "Both"  # Can be "Long", "Short", or "Both"
+    maMethod = "EMA"
+    maLength1 = 6
+    maLength2 = 4
+    bb = 20  # lookback
+    input_retSince = 2
+    input_retValid = 2
+    
+    # Calculate Heiken Ashi
+    o = df['open']
+    h = df['high']
+    l = df['low']
+    c = df['close']
+    
+    haClose = (o + h + l + c) / 4
+    
+    haOpen = np.zeros(len(df))
+    haOpen[0] = (o.iloc[0] + c.iloc[0]) / 2  # Initial open
+    for i in range(1, len(df)):
+        haOpen[i] = (haOpen[i-1] + haClose.iloc[i-1]) / 2
+    
+    haHigh = np.maximum(h, np.maximum(haOpen, haClose))
+    haLow = np.minimum(l, np.minimum(haOpen, haClose))
+    
+    # Apply Moving Averages
+    if maMethod == "EMA":
+        smoothHAOpen = pd.Series(haOpen).ewm(span=maLength1, adjust=False).mean()
+        smoothHAClose = pd.Series(haClose).ewm(span=maLength2, adjust=False).mean()
+    else:
+        smoothHAOpen = pd.Series(haOpen).rolling(maLength1).mean()
+        smoothHAClose = pd.Series(haClose).rolling(maLength2).mean()
+    
+    smoothHAOpen = smoothHAOpen.fillna(method='bfill')
+    smoothHAClose = smoothHAClose.fillna(method='bfill')
+    
+    # Calculate ATR
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    
+    tr1 = high - low
+    tr2 = np.abs(high - close.shift(1))
+    tr3 = np.abs(low - close.shift(1))
+    tr = np.maximum(tr1, np.maximum(tr2, tr3))
+    
+    atr = pd.Series(tr).rolling(atrLength).mean()
+    
+    # Calculate pivot points
+    def pivotlow(low, bb):
+        pivots = np.zeros(len(low))
+        for i in range(bb, len(low) - bb):
+            is_pivot = True
+            for j in range(1, bb + 1):
+                if low.iloc[i - j] <= low.iloc[i] or low.iloc[i + j] <= low.iloc[i]:
+                    is_pivot = False
+                    break
+            if is_pivot:
+                pivots[i] = low.iloc[i]
+        return pd.Series(pivots)
+    
+    def pivothigh(high, bb):
+        pivots = np.zeros(len(high))
+        for i in range(bb, len(high) - bb):
+            is_pivot = True
+            for j in range(1, bb + 1):
+                if high.iloc[i - j] >= high.iloc[i] or high.iloc[i + j] >= high.iloc[i]:
+                    is_pivot = False
+                    break
+            if is_pivot:
+                pivots[i] = high.iloc[i]
+        return pd.Series(pivots)
+    
+    pl = pivotlow(low, bb)
+    ph = pivothigh(high, bb)
+    
+    # Find the most recent pivot point for each bar
+    pl_series = pd.Series(np.zeros(len(df)))
+    ph_series = pd.Series(np.zeros(len(df)))
+    
+    for i in range(len(df)):
+        # Find most recent pl before or at i
+        pl_vals = pl.iloc[:i+1]
+        non_zero_pl = pl_vals[pl_vals > 0]
+        if len(non_zero_pl) > 0:
+            pl_series.iloc[i] = non_zero_pl.iloc[-1]
+        
+        # Find most recent ph before or at i
+        ph_vals = ph.iloc[:i+1]
+        non_zero_ph = ph_vals[ph_vals > 0]
+        if len(non_zero_ph) > 0:
+            ph_series.iloc[i] = non_zero_ph.iloc[-1]
+    
+    pl_series = pl_series.fillna(method='ffill')
+    ph_series = ph_series.fillna(method='ffill')
+    
+    # Box calculations
+    s_yLoc = np.where(low.shift(bb + 1) > low.shift(bb - 1), low.shift(bb - 1), low.shift(bb + 1))
+    r_yLoc = np.where(high.shift(bb + 1) > high.shift(bb - 1), high.shift(bb + 1), high.shift(bb - 1))
+    
+    # Initialize breakout flags
+    sBreak = pd.Series(np.zeros(len(df)), dtype=bool)
+    rBreak = pd.Series(np.zeros(len(df)), dtype=bool)
+    
+    # Breakout detection
+    # Support breakout: close crosses below sBot (bottom of support box)
+    # Resistance breakout: close crosses above rTop (top of resistance box)
+    
+    sBot = pl_series  # Bottom of support box is the support pivot
+    rTop = ph_series  # Top of resistance box is the resistance pivot
+    
+    # Detect breakouts using crossover/crossunder logic
+    # cu = crossunder(close, sBot) - close crosses below support
+    # co = crossover(close, rTop) - close crosses above resistance
+    
+    cu = (close < sBot) & (close.shift(1) >= sBot.shift(1))
+    co = (close > rTop) & (close.shift(1) <= rTop.shift(1))
+    
+    # Update breakout flags
+    for i in range(len(df)):
+        if cu.iloc[i] and pd.isna(sBreak.iloc[i-1]) if i > 0 else True:
+            sBreak.iloc[i] = True
+        if co.iloc[i] and pd.isna(rBreak.iloc[i-1]) if i > 0 else True:
+            rBreak.iloc[i] = True
+        
+        # Reset if pivot changes
+        if pl.iloc[i] > 0:
+            sBreak.iloc[i] = False
+        if ph.iloc[i] > 0:
+            rBreak.iloc[i] = False
+    
+    # Retest conditions
+    # Long retest (sRetValid): after sBreak, price pulls back to support
+    # Short retest (rRetValid): after rBreak, price pulls back to resistance
+    
+    # Calculate retest conditions
+    # s1-s4 for long entries, r1-r4 for short entries
+    
+    sTop = pl_series  # Top of support box
+    sBot = pl_series.shift(-1)  # Bottom of support box (next pivot)
+    
+    # Recalculate sTop and sBot properly based on the box top and bottom
+    sTop = np.where(low.shift(bb + 1) > low.shift(bb - 1), low.shift(bb - 1), low.shift(bb + 1))
+    sBot = pl_series
+    
+    rBot = np.where(high.shift(bb + 1) > high.shift(bb - 1), high.shift(bb + 1), high.shift(bb - 1))
+    rTop = ph_series
+    
+    # Long retest conditions
+    s1 = sBreak & (high >= sTop) & (close <= sBot)
+    s2 = sBreak & (high >= sTop) & (close >= sBot) & (close <= sTop)
+    s3 = sBreak & (high >= sBot) & (high <= sTop)
+    s4 = sBreak & (high >= sBot) & (high <= sTop) & (close < sBot)
+    
+    # Short retest conditions
+    r1 = rBreak & (low <= rBot) & (close >= rTop)
+    r2 = rBreak & (low <= rBot) & (close <= rTop) & (close >= rBot)
+    r3 = rBreak & (low <= rTop) & (low >= rBot)
+    r4 = rBreak & (low <= rTop) & (low >= rBot) & (close > rTop)
+    
+    # Combine retest conditions
+    sRetValid = s1 | s2 | s3 | s4
+    rRetValid = r1 | r2 | r3 | r4
+    
+    # Track when retest events occur
+    retestActive = pd.Series(np.zeros(len(df)), dtype=bool)
+    
+    for i in range(len(df)):
+        if sRetValid.iloc[i] or rRetValid.iloc[i]:
+            retestActive.iloc[i] = True
+    
+    # Generate entries
+    entries = []
+    trade_num = 0
+    
+    for i in range(len(df)):
+        if i < bb:  # Skip first bb bars for lookback
+            continue
+        
+        # Long entry
+        if (tradeDirection in ["Long", "Both"]) and sRetValid.iloc[i]:
+            trade_num += 1
+            entry = {
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': df['time'].iloc[i],
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                'entry_price_guess': close.iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': close.iloc[i],
+                'raw_price_b': close.iloc[i]
+            }
+            entries.append(entry)
+        
+        # Short entry
+        if (tradeDirection in ["Short", "Both"]) and rRetValid.iloc[i]:
+            trade_num += 1
+            entry = {
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': df['time'].iloc[i],
+                'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                'entry_price_guess': close.iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': close.iloc[i],
+                'raw_price_b': close.iloc[i]
+            }
+            entries.append(entry)
+    
+    return entries
+
+I'm completing the ATR calculation by taking the Wilder smoothing approach with a simple moving average. Then I set up the pivot point logic to identify swing highs and lows based on the lookback parameter, using forward and backward searches through the price series.
+
+For each bar, I track the most recent pivot point by finding all non-zero values up to the current index and selecting the last one. If no pivots exist yet, I use the initial values. Once pivots are established, I calculate the box boundaries by comparing the high and low prices shifted by the lookback period to determine the support and resistance levels.
+
+The breakout detection logic initializes flags and checks for crossovers and crossunders relative to the box boundaries. When a breakout occurs and the previous flag wasn't set, the current flag becomes true. The flags reset whenever a new pivot point is detected.
+
+For the retest conditions, I'm evaluating multiple scenarios based on whether a breakout has occurred: checking if the high reaches the top of the box while the close stays below the bottom, or if the high touches the bottom boundary with the close between the box extremes.
+
+The combined retest validity checks whether any of these four conditions are met for both long and short scenarios. Then I'm tracking entry signals by iterating through the data, skipping the initial lookback period, and when a valid retest occurs, creating an entry record with trade number, direction, timestamp, and other metadata before returning the accumulated entries. I'm implementing the Wilder RSI calculation, which uses an exponential weighted moving average approach instead of simple smoothing.
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    
+    # Parameters (default values from Pine Script)
+    atrLength = 14
+    atrMultiplier = 1.5
+    takeProfitRatio = 1.5
+    tradeDirection = "Both"
+    maMethod = "EMA"
+    maLength1 = 6
+    maLength2 = 4
+    bb = 20  # lookback
+    input_retSince = 2
+    input_retValid = 2
+    input_repType = 'On'
+    
+    o = df['open'].copy()
+    h = df['high'].copy()
+    l = df['low'].copy()
+    c = df['close'].copy()
+    
+    # Calculate Heiken Ashi
+    haClose = (o + h + l + c) / 4
+    
+    haOpen = pd.Series(index=df.index, dtype=float)
+    haOpen.iloc[0] = (o.iloc[0] + c.iloc[0]) / 2
+    for i in range(1, len(df)):
+        haOpen.iloc[i] = haOpen.iloc[i-1] + nz(haClose.iloc[i-1], (o.iloc[i-1] + c.iloc[i-1]) / 2)
+        haOpen.iloc[i] /= 2
+    
+    haHigh = pd.concat([h, haOpen, haClose], axis=1).max(axis=1)
+    haLow = pd.concat([l, haOpen, haClose], axis=1).min(axis=1)
+    
+    # Apply Moving Averages to HA values
+    if maMethod == "EMA":
+        smoothHAOpen = haOpen.ewm(span=maLength1, adjust=False).mean()
+        smoothHAClose = haClose.ewm(span=maLength2, adjust=False).mean()
+    else:
+        smoothHAOpen = haOpen.rolling(maLength1).mean()
+        smoothHAClose = haClose.rolling(maLength2).mean()
+    
+    # ATR calculation
+    high = h
+    low = l
+    close = c
+    
+    tr1 = high - low
+    tr2 = (high - close.shift()).abs()
+    tr3 = (low - close.shift()).abs()
+    tr = tr1.where(tr1 > tr2, tr2).where(tr1 > tr3, tr3)
+    
+    atr = tr.rolling(atrLength).mean()
+    
+    # Pivot calculations
+    pl = pd.Series(np.nan, index=df.index)
+    ph = pd.Series(np.nan, index=df.index)
+    
+    for i in range(bb, len(df) - bb):
+        is_pl = True
+        for j in range(1, bb + 1):
+            if low.iloc[i - j] <= low.iloc[i] or low.iloc[i + j] <= low.iloc[i]:
+                is_pl = False
+                break
+        if is_pl:
+            pl.iloc[i] = low.iloc[i]
+        
+        is_ph = True
+        for j in range(1, bb + 1):
+            if high.iloc[i - j] >= high.iloc[i] or high.iloc[i + j] >= high.iloc[i]:
+                is_ph = False
+                break
+        if is_ph:
+            ph.iloc[i] = high.iloc[i]
+    
+    pl = pl.fillna(method='ffill')
+    ph = ph.fillna(method='ffill')
+    
+    s_yLoc = pd.Series(np.where(low.shift(bb + 1) > low.shift(bb - 1), low.shift(bb - 1), low.shift(bb + 1)), index=df.index)
+    r_yLoc = pd.Series(np.where(high.shift(bb + 1) > high.shift(bb - 1), high.shift(bb + 1), high.shift(bb - 1)), index=df.index)
+    
+    # Box top and bottom
+    sTop = pd.Series(np.where(low.shift(bb + 1) > low.shift(bb - 1), low.shift(bb - 1), low.shift(bb + 1)), index=df.index)
+    sBot = pl.copy()
+    
+    rBot = pd.Series(np.where(high.shift(bb + 1) > high.shift(bb - 1), high.shift(bb + 1), high.shift(bb - 1)), index=df.index)
+    rTop = ph.copy()
+    
+    # Detect breakouts by checking when price crosses below support or above resistance levels. cu triggers when close moves below the support box bottom, while co triggers when close moves above the resistance box top, each requiring the prior bar to be at or above that level.
+
+The sBreak and rBreak flags track whether a breakout has occurred, initializing as NaN and setting to True when their respective breakout condition is met. These flags reset to NaN whenever a new pivot point appears, ensuring we only capture the initial breakout.
+
+For the long side, I check four retest conditions after a support breakout: the high must stay at or above sTop while the close respects sBot, or the high reaches sTop with the close between sBot and sTop, or the high sits between sBot and sTop, or it touches sBot and sTop with the close below sBot.
+
+The short side mirrors this with r1 through r4 using the resistance levels—checking when low drops to rBot while the close stays above rTop, when low reaches rBot with the close between rBot and rTop, when low falls within the rBot to rTop range, and when low hits both boundaries with the close above rTop.
+
+The retest condition requires at least input_retSince bars to have passed since the breakout, and the entry only triggers if the retest bar count stays within input_retValid. The repaint logic checks the input_repType setting to determine whether to use the current close or apply special handling based on the bar state. 0, index=df.index)
+    long_valid = pd.Series(np.zeros(len(df)), dtype=bool)
+    short_valid = pd.Series(np.zeros(len(df)), dtype=bool)
+    
+    sBreak_active = False
+    rBreak_active = False
+    
+    for i in range(len(df)):
+        if pd.notna(sBreak_arr[i]) and not sBreak_arr[i] and not sBreak_active:
+            sBreak_active = True
+        
+        if pd.notna(rBreak_arr[i]) and not rBreak_arr[i] and not rBreak_active:
+            rBreak_active = True
+        
+        bars_since_sBreak = barssince(pd.Series(sBreak_arr[:i+1]), lambda x: x)
+        bars_since_rBreak = barssince(pd.Series(rBreak_arr[:i+1]), lambda x: x)
+        
+        if sBreak_active and bars_since_sBreak >= input_retSince:
+            long_valid.iloc[i] = True
+        if rBreak_active and bars_since_rBreak >= input_retSince:
+            short_valid.iloc[i] = True
+
+I'm tracking when breakouts occur and counting bars since each one. The long_valid flag activates once enough bars have passed since a support breakout, and short_valid does the same for resistance breakouts. This ensures entries only trigger after the specified number of bars have elapsed since the initial breakout signal. barssince retestEvent >= retValid threshold and retConditions are satisfied, we generate the entry signal and set retOccurred to prevent duplicate signals. If the retest duration exceeds input_retValid or the signal is valid, we remove the label. For pivot high events, we adjust the box boundary to the retest bar and reset retOccurred.
+
+The core logic requires tracking when retestEvents occur, then validating whether we're within the acceptable window and meeting the price conditions before confirming an entry.
+
+I'm simplifying this to focus on the breakout structure: when price crosses below support (cu), we set sBreak to true, then watch for a pullback to that support level. Long entries trigger when sBreak is active and the price conditions align with the retest logic. Similarly, short entries activate when price crosses above resistance (co), setting rBreak, and then validate against the corresponding retest conditions.
+
+The entries list builds up trade_num, direction, entry timestamps, and price guesses. I need to be careful about the repainting logic though—when input_repType is set to 'Off: Candle Confirmation', we should only consider confirmed bars, which means waiting until the bar actually closes rather than acting on the current bar's signals. Looking at the repaint logic, rTcc determines whether to use the isconfirmed check. For the Python version, I'll apply the same conditional approach: when repainting is disabled with candle confirmation, I need to ensure barstate.isconfirmed evaluates to true before allowing the crossover signal.
+
+I also need to check the pivot detection logic more carefully. The pl and ph calculations use fixnan on ta.pivotlow and ta.pivothigh, which identifies swing lows and highs at specific bar offsets. My pivot implementation needs to match this behavior exactly.
+
+For the retestEvent function, it checks whether any of the four retest conditions (c1 through c4) are true, then verifies the entry is valid based on bar count since the event, the price conditions from repaint, and that retOccurred hasn't already triggered. When all conditions align, it generates the entry signal.
+
+I should also verify the box manipulation logic—sTop and sBot are dynamically pulled from the box object, and when a new pivot forms, the box gets deleted and the sBreak flag resets. This suggests I need to track the state of both the breakout condition and the retest validation across multiple bars to properly execute the strategy.
+
+For implementation, the breakout detection (cu, co) sets flags that persist until the next pivot change, and the retest validation uses barssince to ensure we're within the acceptable window while checking that price conditions align with the entry direction. The retOccurred flag prevents duplicate signals on the same retest event.
+
+I'll simplify by focusing on the core breakout and retest logic: detecting when price crosses the support or resistance boundaries, then confirming retests within the valid bar range using the same repaint handling as the original script. pd.Series(np.nan, index=df.index)
+    ph = pd.Series(np.nan, index=df.index)
+    
+    for i in range(bb, len(df) - bb):
+        # pl
+        is_pl = True
+        for j in range(1, bb + 1):
+            if low.iloc[i - j] <= low.iloc[i] or low.iloc[i + j] <= low.iloc[i]:
+                is_pl = False
+                break
+        if is_pl:
+            pl.iloc[i] = low.iloc[i]
+        
+        # ph
+        is_ph = True
+        for j in range(1, bb + 1):
+            if high.iloc[i - j] >= high.iloc[i] or high.iloc[i + j] >= high.iloc[i]:
+                is_ph = False
+                break
+        if is_ph:
+            ph.iloc[i] = high.iloc[i]
+    
+    # Forward fill to get last known pivot
+    pl = pl.ffill()
+    ph = ph.ffill()
+    
+    # Box boundaries
+    s_yLoc = np.where(low.shift(bb + 1) > low.shift(bb - 1), low.shift(bb - 1), low.shift(bb + 1))
+    r_yLoc = np.where(high.shift(bb + 1) > high.shift(bb - 1), high.shift(bb + 1), high.shift(bb - 1))
+    
+    # Breakout detection
+    # cu = crossunder(close, sBot) - support breakout (price crosses below support)
+    # co = crossover(close, rTop) - resistance breakout (price crosses above resistance)
+    
+    sBot = pl
+    rTop = ph
+    
+    cu = (close < sBot) & (close.shift(1) >= sBot.shift(1))
+    co = (close > rTop) & (close.shift(1) <= rTop.shift(1))
+    
+    # Apply repaint logic
+    if input_repType == 'Off: Candle Confirmation':
+        # Only trigger on confirmed bars (next bar)
+        cu = cu.shift(1).fillna(False)
+        co = co.shift(1).fillna(False)
+    elif input_repType == 'Off: High & Low':
+        cu = (low < sBot) & (low.shift(1) >= sBot.shift(1))
+        co = (high > rTop) & (high.shift(1) <= rTop.shift(1))
+    
+    # Track breakout state
+    sBreak = pd.Series(np.nan, index=df.index)
+    rBreak = pd.Series(np.nan, index=df.index)
+    
+    sBreak_active = False
+    rBreak_active = False
+    
+    for i in range(len(df)):
+        if cu.iloc[i] and not sBreak_active:
+            sBreak_active = True
+            sBreak.iloc[i] = True
+        
+        if co.iloc[i] and not rBreak_active:
+            rBreak_active = True
+            rBreak.iloc[i] = True
+        
+        if pd.notna(pl.iloc[i]) and pd.notna(pl.iloc[i-1]) and pl.iloc[i] != pl.iloc[i-1]:
+            if not sBreak_active:
+                sBreak_active = False
+        
+        if pd.notna(ph.iloc[i]) and pd.notna(ph.iloc[i-1]) and ph.iloc[i] != ph.iloc[i-1]:
+            if not rBreak_active:
+                rBreak_active = False
+    
+    # Retest conditions
+    s1 = sBreak_active & (high >= sTop) & (close <= sBot)
+    s2 = sBreak_active & (high >= sTop) & (close >= sBot) & (close <= sTop)
+    s3 = sBreak_active & (high >= sBot) & (high <= sTop)
+    s4 = sBreak_active & (high >= sBot) & (high <= sTop) & (close < sBot)
+    
+    r1 = rBreak_active & (low <= rBot) & (close >= rTop)
+    r2 = rBreak_active & (low <= rBot) & (close <= rTop) & (close >= rBot)
+    r3 = rBreak_active & (low <= rTop) & (low >= rBot)
+    r4 = rBreak_active & (low <= rTop) & (low >= rBot) & (close > rTop)
+    
+    # Combine retests
+    sRetValid = s1 | s2 | s3 | s4
+    rRetValid = r1 | r2 | r3 | r4
+    
+    # Calculate bars since breakout
+    bars_since_sBreak = pd.Series(np.nan, index=df.index)
+    bars_since_rBreak = pd.Series(np.nan, index=df.index)
+    
+    for i in range(len(df)):
+        if pd.notna(sBreak.iloc[i]) and sBreak.iloc[i]:
+            bars_since_sBreak.iloc[i] = 0
+        elif i > 0 and pd.notna(bars_since_sBreak.iloc[i-1]):
+            bars_since_sBreak.iloc[i] = bars_since_sBreak.iloc[i-1] + 1
+        
+        if pd.notna(rBreak.iloc[i]) and rBreak.iloc[i]:
+            bars_since_rBreak.iloc[i] = 0
+        elif i > 0 and pd.notna(bars_since_rBreak.iloc[i-1]):
+            bars_since_rBreak.iloc[i] = bars_since_rBreak.iloc[i-1] + 1
+    
+    # Final entry conditions
+    long_entry = sRetValid & (bars_since_sBreak >= input_retSince) & (bars_since_sBreak <= input_retValid)
+    short_entry = rRetValid & (bars_since_rBreak >= input_retSince) & (bars_since_rBreak <= input_retValid)
+    
+    # Filter by trade direction
+    if tradeDirection == "Long":
+        short_entry = pd.Series(False, index=df.index)
+    elif tradeDirection == "Short":
+        long_entry = pd.Series(False, index=df.index)
+    
+    # Generate entries
+    entries = []
+    trade_num = 0
+    
+    for i in range(len(df)):
+        if i < bb:
+            continue
+        
+        entry_price = close.iloc[i]
+        
+        if long_entry.iloc[i]:
+            trade_num += 1
+            ts = df['time'].iloc[i]
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': ts,
+                'entry_time': datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                'entry_price_guess': entry_price,
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': entry_price,
+                'raw_price_b': entry_price
+            })
+        
+        if short_entry.iloc[i]:
+            trade_num += 1
+            ts = df['time'].iloc[i]
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': ts,
+                'entry_time': datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                'entry_price_guess': entry_price,
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': entry_price,
+                'raw_price_b': entry_price
+            })
+    
+    return entries
+
+I need to verify the ATR calculation and ensure the breakout detection handles the repainting logic correctly. Looking at the function structure, it's checking retest conditions after a breakout occurs, calculating bars since the event, and validating against the retest detection threshold. The function uses repaint logic to determine when conditions are met based on the input parameter, then tracks retOccurred to prevent duplicate entries. The key is tracking the breakout state, counting bars since it occurred, and applying the appropriate price condition check based on the repaint setting. The breakLabel function draws a label when a breakout occurs. Looking at the logic flow, sBreak is set true when cu fires (support breakout), then the system checks for retests. The retest event function monitors s1-s4 conditions and returns sRetValid when conditions align.
+
+The entry logic appears to be: when sBreak activates and sRetValid triggers, that's a long entry signal. The system waits for the retest confirmation before entering a position. For short entries, rBreak (resistance breakout) followed by rRetValid generates the signal.
+
+Looking more carefully at the structure, I need to verify the exact trigger conditions in the retest function. The logic checks if retActive changes state, then validates price movement against the breakout level depending on whether it's a pivot high or low type. The retValid condition combines timing (bars since event within threshold) with price confirmation and ensuring no prior occurrence.
+
+For implementation, I'll track when sRetValid or rRetValid signals fire, since these incorporate the barssince check and repaint logic. Entries will trigger based on whichever direction's signal is active.
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    # Parameters
+    atrLength = 14
+    atrMultiplier = 1.5
+    takeProfitRatio = 1.5
+    tradeDirection = "Both"
+    maMethod = "EMA"
+    maLength1 = 6
+    maLength2 = 4
+    bb = 20
+    input_retSince = 2
+    input_retValid = 2
+    input_repType = 'On'
+    
+    o = df['open'].copy()
+    h = df['high'].copy()
+    l = df['low'].copy()
+    c = df['close'].copy()
+    
+    # Heiken Ashi
+    haClose = (o + h + l + c) / 4
+    haOpen = pd.Series(index=df.index, dtype=float)
+    haOpen.iloc[0] = (o.iloc[0] + c.iloc[0]) / 2
+    for i in range(1, len(df)):
+        prev_ha_close = haClose.iloc[i-1] if pd.notna(haClose.iloc[i-1]) else (o.iloc[i-1] + h.iloc[i-1] + l.iloc[i-1] + c.iloc[i-1]) / 4
+        haOpen.iloc[i] = (haOpen.iloc[i-1] + prev_ha_close) / 2
+    
+    haHigh = pd.concat([h, haOpen, haClose], axis=1).max(axis=1)
+    haLow = pd.concat([l, haOpen, haClose], axis=1).min(axis=1)
+    
+    # Moving averages applied to HA values
+    if maMethod == "EMA":
+        smoothHAOpen = haOpen.ewm(span=maLength1, adjust=False).mean()
+        smoothHAClose = haClose.ewm(span=maLength2, adjust=False).mean()
+    else:
+        smoothHAOpen = haOpen.rolling(maLength1).mean()
+        smoothHAClose = haClose.rolling(maLength2).mean()
+    
+    # ATR calculation using Wilder's method
+    high = h
+    low = l
+    close = c
+    
+    tr1 = high - low
+    tr2 = high - close.shift()
+    tr3 = low - close.shift()
+    tr = tr1.combine_first(tr2.abs()).combine_first(tr3.abs()).clip(lower=0)
+    
+    atr = tr.ewm(alpha=1/atrLength, adjust=False).mean()
+    
+    # Pivot points for support and resistance
+    pl = pd.Series(np.nan, index=df.index)
+    ph = pd.Series(np.nan, index=df.index)

@@ -1,0 +1,4 @@
+lookback = 20
+window = 2*lookback+1
+pivot_high_raw = high.where(high == high.rolling(window=window, center=True).max())
+pivot_low_raw = low.where(low == low.rolling(window=window, center=True).min())

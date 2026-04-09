@@ -1,0 +1,2 @@
+df['datetime'] = pd.to_datetime(df['time'], unit='s', utc=True)
+df['day'] = df['datetime'].dt.date

@@ -1,0 +1,13 @@
+# Initialize arrays
+ret_valid = np.zeros(len(df), dtype=bool)
+last_ret_event_idx = -1
+
+for i in range(len(df)):
+    if ret_event[i]:
+        last_ret_event_idx = i
+    
+    if last_ret_event_idx >= 0:
+        bars_since_retest = i - last_ret_event_idx
+        if bars_since_retest > 0 and bars_since_retest <= ret_valid_window:
+            if price_condition[i]:
+                ret_valid[i] = True

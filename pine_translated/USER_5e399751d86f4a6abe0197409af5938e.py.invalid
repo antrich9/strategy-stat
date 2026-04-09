@@ -1,0 +1,6 @@
+def wma(series, length):
+      # Weighted moving average
+      weights = np.arange(1, length + 1)
+      def weighted_avg(x):
+          return np.dot(x, weights) / weights.sum()
+      return series.rolling(length).apply(weighted_avg, raw=True)

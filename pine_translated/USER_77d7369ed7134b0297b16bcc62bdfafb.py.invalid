@@ -1,0 +1,8 @@
+# Rolling max over 2*lookback ending at each bar
+rolling_max = high.rolling(2*lookback, min_periods=2*lookback).max()
+
+# Shift by lookback to align with the pivot position
+rolling_max_at_pivot = rolling_max.shift(lookback)
+
+# Pivot high: high at pivot position > max of surrounding 2*lookback bars
+ph = (high == rolling_max_at_pivot) & (high.rolling(2*lookback, min_periods=2*lookback).max().shift(lookback) > high)

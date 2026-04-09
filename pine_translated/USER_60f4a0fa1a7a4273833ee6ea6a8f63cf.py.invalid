@@ -1,0 +1,140 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    # Parameters
+    lookback = 30
+    eqTolAtrMult = 0.15
+    minTouches = 2
+    atrLen = 14
+    minBodyPct = 0.60
+    minRangeAtr = 0.80
+    useFVG = True
+    fvgWaitBars = 10
+    fvgMinTicks = 3
+    useEma200 = True
+    emaLen = 200
+    useSession = False
+    mintick = 1e-6
+    
+    # Session filter
+    inSession = pd.Series(True, index=df.index)
+    if useSession:
+        times = pd.to_datetime(df['time'], unit='s', utc=True).dt.time
+        start = pd.to_datetime("09:30", format="%H:%M").time()
+        end = pd.to_datetime("16:00", format="%H:%M").time()
+        inSession = (times >= start) & (times <= end)
+    
+    # ATR (Wilder's method)
+    high_low = df['high'] - df['low']
+    high_close = (df['high'] - df['close'].shift(1)).abs()
+    low_close = (df['low'] - df['close'].shift(1)).abs()
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1.0/atrLen, adjust=False).mean()
+    
+    # EMA200
+    ema200 = df['close'].ewm(span=emaLen, adjust=False).mean()
+    trendLongOK = df['close'] >= ema200
+    trendShortOK = df['close'] <= ema200
+    
+    # Displacement candle criteria
+    rng = df['high'] - df['low']
+    body = (df['close'] - df['open']).abs()
+    bodyPct = np.where(rng > 0, body / rng, 0.0)
+    
+    isDisplacementBull = (df['close'] > df['open']) & (bodyPct >= minBodyPct) & (rng >= atr * minRangeAtr)
+    isDisplacementBear = (df['close'] < df['open']) & (bodyPct >= minBodyPct) & (rng >= atr * minRangeAtr)
+    
+    # FVG Detection
+    bullishFVG = df['low'] > df['high'].shift(2)
+    bullishFVGSize = np.where(bullishFVG, df['low'] - df['high'].shift(2), 0.0)
+    bullishFVGValid = bullishFVG & (bullishFVGSize / mintick >= fvgMinTicks)
+    
+    bearishFVG = df['high'] < df['low'].shift(2)
+    bearishFVGSize = np.where(bearishFVG, df['low'].shift(2) - df['high'], 0.0)
+    bearishFVGValid = bearishFVG & (bearishFVGSize / mintick >= fvgMinTicks)
+    
+    # Liquidity Pool Detection
+    tol = atr * eqTolAtrMult
+    liqHighLevel = df['high'].shift(1)
+    liqLowLevel = df['low'].shift(1)
+    
+    highTouches = pd.Series(0, index=df.index)
+    lowTouches = pd.Series(0, index=df.index)
+    
+    for i in range(1, lookback + 1):
+        shifted_high = df['high'].shift(i)
+        shifted_low = df['low'].shift(i)
+        highTouches += ((shifted_high - liqHighLevel).abs() <= tol).astype(int)
+        lowTouches += ((shifted_low - liqLowLevel).abs() <= tol).astype(int)
+    
+    hasBuySideLiq = highTouches >= minTouches
+    hasSellSideLiq = lowTouches >= minTouches
+    
+    # Sweep Detection
+    sweepSellSide = hasSellSideLiq & (df['low'] < liqLowLevel - tol) & (df['close'] > liqLowLevel)
+    sweepBuySide = hasBuySideLiq & (df['high'] > liqHighLevel + tol) & (df['close'] < liqHighLevel)
+    
+    bullSweepDisp = sweepSellSide & isDisplacementBull & trendLongOK
+    bearSweepDisp = sweepBuySide & isDisplacementBear & trendShortOK
+    
+    # Track last sweep bars
+    bar_index = pd.Series(np.arange(len(df)), index=df.index)
+    lastSellSideSweepBar = pd.Series(np.nan, index=df.index)
+    lastBuySideSweepBar = pd.Series(np.nan, index=df.index)
+    
+    for i in range(1, len(df)):
+        if sweepSellSide.iloc[i]:
+            lastSellSideSweepBar.iloc[i] = bar_index.iloc[i]
+        else:
+            lastSellSideSweepBar.iloc[i] = lastSellSideSweepBar.iloc[i-1]
+        
+        if sweepBuySide.iloc[i]:
+            lastBuySideSweepBar.iloc[i] = bar_index.iloc[i]
+        else:
+            lastBuySideSweepBar.iloc[i] = lastBuySideSweepBar.iloc[i-1]
+    
+    barsSinceSellSweep = np.where(lastSellSideSweepBar.notna(), bar_index - lastSellSideSweepBar, 999)
+    barsSinceBuySweep = np.where(lastBuySideSweepBar.notna(), bar_index - lastBuySideSweepBar, 999)
+    
+    for i in range(1, len(df)):
+        if barsSinceSellSweep[i] > fvgWaitBars:
+            lastSellSideSweepBar.iloc[i] = np.nan
+        if barsSinceBuySweep[i] > fvgWaitBars:
+            lastBuySideSweepBar.iloc[i] = np.nan
+    
+    barsSinceSellSweep = np.where(lastSellSideSweepBar.notna(), bar_index - lastSellSideSweepBar, 999)
+    barsSinceBuySweep = np.where(lastBuySideSweepBar.notna(), bar_index - lastBuySideSweepBar, 999)
+    
+    # Entry Logic
+    longSetup = sweepSellSide | ((barsSinceSellSweep > 0) & (barsSinceSellSweep <= fvgWaitBars))
+    longEntry = longSetup & bullishFVGValid & trendLongOK & inSession
+    
+    shortSetup = sweepBuySide | ((barsSinceBuySweep > 0) & (barsSinceBuySweep <= fvgWaitBars))
+    shortEntry = shortSetup & bearishFVGValid & trendShortOK & inSession
+    
+    if not useFVG:
+        longEntry = bullSweepDisp & inSession
+        shortEntry = bearSweepDisp & inSession
+    
+    # Clear sweep memory after entry
+    for i in range(1, len(df)):
+        if longEntry.iloc[i]:
+            lastSellSideSweepBar.iloc[i] = np.nan
+        if shortEntry.iloc[i]:
+            lastBuySideSweepBar.iloc[i] = np.nan
+    
+    # Generate entries
+    entries = []
+    trade_num = 1
+    
+    for i in range(len(df)):
+        if longEntry.iloc[i]:
+            ts = df['time'].iloc[i]
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': int(ts),
+                'entry_time': datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                'entry_price_guess

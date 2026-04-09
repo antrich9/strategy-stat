@@ -1,0 +1,102 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    # --- Input parameters from the original Pine Script ---
+    donch_length = 20               # not used in entry logic
+    min_body_pct = 70
+    atr_period = 100
+    search_factor = 1.3
+    ma_length = 20
+    ma_length_fast = 8
+    ma_reaction = 1
+    ma_reaction_fast = 1
+    # Trend condition strings (fixed as in the script)
+    bullish_trend_condition = "DIRECCION MEDIA RAPIDA ALCISTA"
+    bearish_trend_condition = "DIRECCION MEDIA RAPIDA BAJISTA"
+
+    # --- Helper: Wilder RSI (not needed here) ---
+    # --- Helper: Wilder ATR ---
+    close_shift = df['close'].shift(1)
+    tr = pd.concat([
+        df['high'] - df['low'],
+        (df['high'] - close_shift).abs(),
+        (df['low'] - close_shift).abs()
+    ], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/atr_period, adjust=False).mean()
+    atr_prev = atr.shift(1)
+
+    # --- Body size and validity ---
+    body = (df['close'] - df['open']).abs()
+    total_range = df['high'] - df['low']
+    body_pct = np.where(total_range > 0, body * 100.0 / total_range, 0.0)
+
+    is_green_candle = df['close'] > df['open']
+    is_red_candle = df['close'] < df['open']
+
+    is_green_valid = is_green_candle & (body_pct >= min_body_pct)
+    is_red_valid = is_red_candle & (body_pct >= min_body_pct)
+
+    # Strong elephant candles
+    is_green_strong = is_green_valid & (body >= atr_prev * search_factor) & atr_prev.notna()
+    is_red_strong = is_red_valid & (body >= atr_prev * search_factor) & atr_prev.notna()
+
+    # --- Moving averages (SMA as per default) ---
+    slow_ma = df['close'].rolling(window=ma_length).mean()
+    fast_ma = df['close'].rolling(window=ma_length_fast).mean()
+
+    # --- Trend direction (rising/falling) ---
+    slow_ma_rising = slow_ma > slow_ma.shift(ma_reaction)
+    slow_ma_falling = slow_ma < slow_ma.shift(ma_reaction)
+
+    slow_ma_trend = pd.Series(0, index=df.index)
+    for i in range(1, len(df)):
+        if slow_ma_rising.iloc[i]:
+            slow_ma_trend.iloc[i] = 1
+        elif slow_ma_falling.iloc[i]:
+            slow_ma_trend.iloc[i] = -1
+        else:
+            slow_ma_trend.iloc[i] = slow_ma_trend.iloc[i - 1]
+
+    fast_ma_rising = fast_ma > fast_ma.shift(ma_reaction_fast)
+    fast_ma_falling = fast_ma < fast_ma.shift(ma_reaction_fast)
+
+    fast_ma_trend = pd.Series(0, index=df.index)
+    for i in range(1, len(df)):
+        if fast_ma_rising.iloc[i]:
+            fast_ma_trend.iloc[i] = 1
+        elif fast_ma_falling.iloc[i]:
+            fast_ma_trend.iloc[i] = -1
+        else:
+            fast_ma_trend.iloc[i] = fast_ma_trend.iloc[i - 1]
+
+    # --- Entry conditions (finalGreenElephantCandle / finalRedElephantCandle) ---
+    # Based on the fixed trend strings only the corresponding trend checks are true.
+    is_fast_bullish = (bullish_trend_condition == "DIRECCION MEDIA RAPIDA ALCISTA") & (fast_ma_trend > 0)
+    is_fast_bearish = (bearish_trend_condition == "DIRECCION MEDIA RAPIDA BAJISTA") & (fast_ma_trend < 0)
+
+    long_signal = is_green_strong & is_fast_bullish
+    short_signal = is_red_strong & is_fast_bearish
+
+    # Ensure all required indicators are available
+    valid = ~(atr.isna() | slow_ma.isna() | fast_ma.isna())
+    long_signal = long_signal & valid
+    short_signal = short_signal & valid
+
+    # --- Build entry list ---
+    entries = []
+    trade_num = 1
+    for i in df.index:
+        if

@@ -1,0 +1,13 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def _wma(series, length):
+    weights = np.arange(1, length + 1)
+    def weighted_avg(x):
+        return np.dot(x, weights) / weights.sum()
+    return series.rolling(window=length, min_periods=length).apply(weighted_avg, raw=True)
+
+def _compute_t3(src, length, factor):
+    ema1 = src.ewm(span=length, adjust=False).mean()
+    ema2 = ema1.ewm(span=length, adjust=False

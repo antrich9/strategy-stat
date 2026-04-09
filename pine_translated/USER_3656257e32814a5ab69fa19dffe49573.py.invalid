@@ -1,0 +1,110 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    df = df.copy()
+    df['date'] = pd.to_datetime(df['time'], unit='s').dt.date
+    
+    daily_hl = df.groupby('date')['high'].max().reset_index()
+    daily_hl.columns = ['date', 'pdHigh']
+    daily_hl['date'] = pd.to_datetime(daily_hl['date'])
+    daily_ll = df.groupby('date')['low'].min().reset_index()
+    daily_ll.columns = ['date', 'pdLow']
+    daily_ll['date'] = pd.to_datetime(daily_ll['date'])
+    
+    df = df.merge(daily_hl, on='date', how='left')
+    df = df.merge(daily_ll, on='date', how='left')
+    df['pdHigh'] = df['pdHigh'].shift(1)
+    df['pdLow'] = df['pdLow'].shift(1)
+    
+    df['sweptHigh'] = (df['high'] > df['pdHigh']) & (df['pdHigh'].notna())
+    df['sweptLow'] = (df['low'] < df['pdLow']) & (df['pdLow'].notna())
+    
+    tr1 = np.maximum(df['high'] - df['low'], np.maximum(np.abs(df['high'] - df['close'].shift(1)), np.abs(df['low'] - df['close'].shift(1))))
+    df['atr14'] = tr1.ewm(alpha=1/14, adjust=False).mean()
+    
+    atr_period = 14
+    atr_mult = 3.0
+    
+    df['atr'] = df['atr14'].copy()
+    upper_band = df['high'] - atr_mult * df['atr']
+    lower_band = df['low'] + atr_mult * df['atr']
+    prev_upper = upper_band.shift(1)
+    prev_lower = lower_band.shift(1)
+    prev_upper.iloc[0] = df['high'].iloc[0] - atr_mult * df['atr'].iloc[0]
+    prev_lower.iloc[0] = df['low'].iloc[0] + atr_mult * df['atr'].iloc[0]
+    
+    direction = pd.Series(1, index=df.index)
+    direction.iloc[0] = 1
+    
+    for i in range(1, len(df)):
+        if pd.notna(df['atr'].iloc[i]) and pd.notna(df['close'].iloc[i]):
+            new_upper = min(prev_upper.iloc[i], df['high'].iloc[i] + atr_mult * df['atr'].iloc[i])
+            new_lower = max(prev_lower.iloc[i], df['low'].iloc[i] - atr_mult * df['atr'].iloc[i])
+            upper_band.iloc[i] = new_upper
+            lower_band.iloc[i] = new_lower
+            prev_upper.iloc[i] = new_upper
+            prev_lower.iloc[i] = new_lower
+            if df['close'].iloc[i] > lower_band.iloc[i]:
+                direction.iloc[i] = 1
+            elif df['close'].iloc[i] < upper_band.iloc[i]:
+                direction.iloc[i] = -1
+            else:
+                direction.iloc[i] = direction.iloc[i-1]
+    
+    df['supertrend'] = lower_band.where(direction == 1, upper_band)
+    df['supertrend_dir'] = direction
+    
+    high_1 = df['high'].shift(1)
+    high_2 = df['high'].shift(2)
+    high_3 = df['high'].shift(3)
+    high_4 = df['high'].shift(4)
+    
+    low_1 = df['low'].shift(1)
+    low_2 = df['low'].shift(2)
+    low_3 = df['low'].shift(3)
+    low_4 = df['low'].shift(4)
+    
+    df['is_swing_high'] = (high_2 > high_1) & (high_3 < high_2) & (high_4 < high_2)
+    df['is_swing_low'] = (low_2 < low_1) & (low_3 > low_2) & (low_4 > low_2)
+    
+    swing_type = pd.Series("none", index=df.index)
+    for i in range(len(df)):
+        if df['is_swing_high'].iloc[i]:
+            swing_type.iloc[i] = "dailyHigh"
+        elif df['is_swing_low'].iloc[i]:
+            swing_type.iloc[i] = "dailyLow"
+        else:
+            swing_type.iloc[i] = swing_type.iloc[i-1] if i > 0 else "none"
+    
+    df['swing_type'] = swing_type
+    
+    sma54 = df['close'].ewm(span=54, adjust=False).mean()
+    loc211 = sma54 > sma54.shift(1)
+    
+    volfilt = df['volume'] > df['volume'].rolling(9).mean() * 1.5
+    atr211 = df['atr14'] / 1.5
+    
+    df['bull_fvg'] = (df['low'] > high_2) & volfilt & ((df['low'] - high_2 > atr211) | (atr211.notna())) & loc211
+    df['bear_fvg'] = (df['high'] < low_2) & volfilt & ((low_2 - df['high'] > atr211) | (atr211.notna())) & ~loc211
+    
+    df['ts'] = pd.to_datetime(df['time'], unit='s', utc=True)
+    df['ts_london'] = df['ts'].dt.tz_convert('Europe/London')
+    df['hour'] = df['ts_london'].dt.hour
+    df['minute'] = df['ts_london'].dt.minute
+    df['time_decimal'] = df['hour'] + df['minute'] / 60.0
+    
+    morning_window = (df['time_decimal'] >= 6.75) & (df['time_decimal'] < 9.75)
+    afternoon_window = (df['time_decimal'] >= 14.75) & (df['time

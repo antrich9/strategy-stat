@@ -1,0 +1,2 @@
+df['HighPivot'] = df['high'][PP:].rolling(2*PP+1, center=True).max().shift(-PP) == df['high']
+df['LowPivot'] = df['low'][PP:].rolling(2*PP+1, center=True).max().shift(-PP) == df['low']

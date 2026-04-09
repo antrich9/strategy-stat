@@ -1,0 +1,174 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    
+    close = df['close'].copy()
+    high = df['high'].copy()
+    low = df['low'].copy()
+    time_col = df['time'].copy()
+    
+    # Settings
+    use_QQE = True
+    use_SSL = True
+    use_WAE = True
+    use_E2PSS = True
+    use_Trendilo = True
+    use_TTM = True
+    
+    entry_mode = "All Active"
+    
+    start_year, start_month, start_date = 2022, 1, 1
+    end_year, end_month, end_date = 2030, 1, 1
+    
+    # QQE Settings
+    RSI_Period, SF, QQE, ThreshHold = 6, 6, 3, 3
+    length, qqeMult = 50, 0.35
+    RSI_Period2, SF2, QQE2, ThreshHold2 = 6, 5, 1.61, 3
+    
+    # SSL Settings
+    sslLen = 60
+    
+    # WAE Settings
+    sensitivity, fastLength, slowLength, channelLength, mult = 150, 20, 40, 20, 2.0
+    
+    # E2PSS Settings
+    PeriodE2PSS = 15
+    
+    # Trendilo Settings
+    trendilo_length, trendilo_offset, trendilo_sigma = 50, 0.85, 6
+    
+    # TTM Settings
+    length_TTMS = 20
+    BB_mult_TTMS, KC_mult_low_TTMS = 2.0, 2.0
+    
+    # ========== DATE RANGE ==========
+    start_ts = int(datetime(start_year, start_month, start_date, tzinfo=timezone.utc).timestamp())
+    end_ts = int(datetime(end_year, end_month, end_date, tzinfo=timezone.utc).timestamp())
+    in_date_range = (time_col >= start_ts) & (time_col < end_ts)
+    
+    # ========== Wilder RSI ==========
+    def wilders_rsi(series, period):
+        delta = series.diff()
+        gain = delta.where(delta > 0, 0.0)
+        loss = (-delta).where(delta < 0, 0.0)
+        avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
+        rs = avg_gain / avg_loss
+        return 100 - (100 / (1 + rs))
+    
+    # ========== ALMA ==========
+    def alma(src, length, offset, sigma):
+        m = offset * (length - 1)
+        s = sigma * (length - 1) / 6
+        weights = np.exp(-((np.arange(length) - m) ** 2) / (2 * s * s))
+        weights /= weights.sum()
+        return src.rolling(length).apply(lambda x: np.dot(x, weights), raw=True)
+    
+    # ========== HMA ==========
+    def hma(src, length):
+        wma1 = src.rolling(length // 2).apply(lambda x: np.dot(x, np.arange(1, len(x)+1)) / (len(x)*(len(x)+1)/2), raw=True)
+        wma2 = src.rolling(length).apply(lambda x: np.dot(x, np.arange(1, len(x)+1)) / (len(x)*(len(x)+1)/2), raw=True)
+        return 2 * wma1 - wma2
+    
+    # ========== QQE ==========
+    Wilders_Period = RSI_Period * 2 - 1
+    Rsi = wilders_rsi(close, RSI_Period)
+    RsiMa = Rsi.ewm(span=SF, adjust=False).mean()
+    AtrRsi = (RsiMa.shift(1) - RsiMa).abs()
+    MaAtrRsi = AtrRsi.ewm(alpha=1/Wilders_Period, adjust=False).mean()
+    dar = MaAtrRsi.ewm(alpha=1/Wilders_Period, adjust=False).mean() * QQE
+    
+    longband = pd.Series(0.0, index=df.index)
+    shortband = pd.Series(0.0, index=df.index)
+    trend = pd.Series(0, index=df.index)
+    
+    for i in range(1, len(df)):
+        RSIndex = RsiMa.iloc[i]
+        newshortband_val = RSIndex + dar.iloc[i]
+        newlongband_val = RSIndex - dar.iloc[i]
+        
+        prev_longband = longband.iloc[i-1]
+        prev_shortband = shortband.iloc[i-1]
+        prev_RSIndex = RsiMa.iloc[i-1]
+        
+        longband.iloc[i] = prev_longband if (prev_RSIndex > prev_longband and RSIndex > prev_longband) else newlongband_val
+        shortband.iloc[i] = prev_shortband if (prev_RSIndex < prev_shortband and RSIndex < prev_shortband) else newshortband_val
+        
+        cross_1 = prev_longband < RSIndex and prev_longband >= RSIndex
+        cross_2 = RSIndex > prev_shortband and RSIndex <= prev_shortband
+        
+        trend.iloc[i] = 1 if cross_2 else (-1 if cross_1 else trend.iloc[i-1])
+    
+    FastAtrRsiTL = pd.Series(np.where(trend == 1, longband.values, shortband.values), index=df.index)
+    
+    basis = (FastAtrRsiTL - 50).rolling(length).mean()
+    dev = qqeMult * (FastAtrRsiTL - 50).rolling(length).std()
+    upper = basis + dev
+    lower = basis - dev
+    
+    # QQE 2
+    Wilders_Period2 = RSI_Period2 * 2 - 1
+    Rsi2 = wilders_rsi(close, RSI_Period2)
+    RsiMa2 = Rsi2.ewm(span=SF2, adjust=False).mean()
+    AtrRsi2 = (RsiMa2.shift(1) - RsiMa2).abs()
+    MaAtrRsi2 = AtrRsi2.ewm(alpha=1/Wilders_Period2, adjust=False).mean()
+    dar2 = MaAtrRsi2.ewm(alpha=1/Wilders_Period2, adjust=False).mean() * QQE2
+    
+    longband2 = pd.Series(0.0, index=df.index)
+    shortband2 = pd.Series(0.0, index=df.index)
+    trend2 = pd.Series(0, index=df.index)
+    
+    for i in range(1, len(df)):
+        RSIndex2 = RsiMa2.iloc[i]
+        newshortband2_val = RSIndex2 + dar2.iloc[i]
+        newlongband2_val = RSIndex2 - dar2.iloc[i]
+        
+        prev_longband2 = longband2.iloc[i-1]
+        prev_shortband2 = shortband2.iloc[i-1]
+        prev_RSIndex2 = RsiMa2.iloc[i-1]
+        
+        longband2.iloc[i] = prev_longband2 if (prev_RSIndex2 > prev_longband2 and RSIndex2 > prev_longband2) else newlongband2_val
+        shortband2.iloc[i] = prev_shortband2 if (prev_RSIndex2 < prev_shortband2 and RSIndex2 < prev_shortband2) else newshortband2_val
+        
+        cross_1_2 = prev_longband2 < RSIndex2 and prev_longband2 >= RSIndex2
+        cross_2_2 = RSIndex2 > prev_shortband2 and RSIndex2 <= prev_shortband2
+        
+        trend2.iloc[i] = 1 if cross_2_2 else (-1 if cross_1_2 else trend2.iloc[i-1])
+    
+    Greenbar1 = RsiMa2 - 50 > ThreshHold2
+    Greenbar2 = RsiMa - 50 > upper
+    Redbar1 = RsiMa2 - 50 < -ThreshHold2
+    Redbar2 = RsiMa - 50 < lower
+    
+    qqeBuy = (Greenbar1 & Greenbar2) if use_QQE else pd.Series(False, index=df.index)
+    qqeSell = (Redbar1 & Redbar2) if use_QQE else pd.Series(False, index=df.index)
+    
+    # ========== SSL HYBRID ==========
+    sslBaseline = hma(close, sslLen)
+    sslUp = sslBaseline > sslBaseline.shift(1)
+    sslDown = sslBaseline < sslBaseline.shift(1)
+    sslBuy = sslUp if use_SSL else pd.Series(False, index=df.index)
+    sslSell = sslDown if use_SSL else pd.Series(False, index=df.index)
+    
+    # ========== WAE ==========
+    fastMA = close.ewm(span=fastLength, adjust=False).mean()
+    slowMA = close.ewm(span=slowLength, adjust=False).mean()
+    macd = fastMA - slowMA
+    t1 = (macd - macd.shift(1)) * sensitivity
+    
+    bb_basis = close.rolling(channelLength).mean()
+    bb_std = close.rolling(channelLength).std()
+    e1 =

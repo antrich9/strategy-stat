@@ -1,0 +1,1 @@
+ob_down = (close.shift(1) < open.shift(1)) & (close > open) & (close < low.shift(1))

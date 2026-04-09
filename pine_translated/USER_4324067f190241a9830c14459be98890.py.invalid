@@ -1,0 +1,11 @@
+bb = 20
+   low = df['low']
+   # Compute pivot low
+   pl = pd.Series(index=low.index, dtype=float)
+   for i in range(bb, len(low)-bb):
+       window = low.iloc[i-bb:i+bb+1]
+       if low.iloc[i] == window.min():
+           pl.iloc[i] = low.iloc[i]
+       else:
+           pl.iloc[i] = np.nan
+   pl = pl.ffill()

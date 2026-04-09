@@ -1,0 +1,65 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    # Daily data (df is daily OHLCV)
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    volume = df['volume']
+
+    # Current and lagged daily values
+    dailyHigh11 = high
+    dailyLow11 = low
+    dailyClose11 = close
+    dailyOpen11 = df['open']
+
+    # Previous day and two days ago
+    prevDayHigh11 = high.shift(1)
+    prevDayLow11 = low.shift(1)
+    dailyHigh21 = high.shift(1)
+    dailyLow21 = low.shift(1)
+    dailyHigh22 = high.shift(2)
+    dailyLow22 = low.shift(2)
+
+    # Additional lags for swing detection
+    high_shift3 = high.shift(3)
+    high_shift4 = high.shift(4)
+    low_shift3 = low.shift(3)
+    low_shift4 = low.shift(4)
+
+    # FVG conditions (volfilt, atrfilt, locfilt ignored – inputs are false)
+    bfvg11 = dailyLow11 > dailyHigh22      # bullish FVG
+    sfvg11 = dailyHigh11 < dailyLow22      # bearish FVG
+
+    # Swing detection
+    is_swing_high11 = (dailyHigh21 < dailyHigh22) & (high_shift3 < dailyHigh22) & (high_shift4 < dailyHigh22)
+    is_swing_low11 = (dailyLow21 > dailyLow22) & (low_shift3 > dailyLow22) & (low_shift4 > dailyLow22)
+
+    # Determine swing type series and forward‑fill
+    swing_type = pd.Series(
+        np.where(is_swing_high11, "dailyHigh",
+                 np.where(is_swing_low11, "dailyLow", np.nan)),
+        index=df.index
+    )
+    last_swing_type = swing_type.ffill().fillna("none")
+
+    # Entry signals
+    entry_long = bfvg11 & (last_swing_type == "dailyLow")
+    entry_short = sfvg11 & (last_swing_type == "dailyHigh")
+
+    # Build entry list
+    entries = []
+    trade_num =

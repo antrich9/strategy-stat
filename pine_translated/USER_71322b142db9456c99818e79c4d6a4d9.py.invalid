@@ -1,0 +1,112 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    bb = 20
+    input_retSince = 2
+    input_retValid = 2
+    tradeDirection = "Both"
+    
+    pl = pd.Series(np.nan, index=df.index)
+    ph = pd.Series(np.nan, index=df.index)
+    
+    for i in range(bb, len(df) - bb):
+        if df['low'].iloc[i] <= df['low'].iloc[i-bb:i].min() and df['low'].iloc[i] <= df['low'].iloc[i+1:i+bb+1].min():
+            pl.iloc[i] = df['low'].iloc[i]
+        if df['high'].iloc[i] >= df['high'].iloc[i-bb:i].max() and df['high'].iloc[i] >= df['high'].iloc[i+1:i+bb+1].max():
+            ph.iloc[i] = df['high'].iloc[i]
+    
+    pl = pl.ffill()
+    ph = ph.ffill()
+    
+    s_yLoc = np.where(df['low'].shift(bb + 1) > df['low'].shift(bb - 1), df['low'].shift(bb - 1), df['low'].shift(bb + 1))
+    sTop = pd.Series(np.maximum(pl.fillna(0).values, s_yLoc), index=df.index)
+    sBot = pd.Series(np.minimum(pl.fillna(df['low']).values, s_yLoc), index=df.index)
+    
+    r_yLoc = np.where(df['high'].shift(bb + 1) > df['high'].shift(bb - 1), df['high'].shift(bb - 1), df['high'].shift(bb + 1))
+    rTop = pd.Series(np.maximum(ph.fillna(0).values, r_yLoc), index=df.index)
+    rBot = pd.Series(np.minimum(ph.fillna(df['high']).values, r_yLoc), index=df.index)
+    
+    cu = (df['close'] < sBot) & (df['close'].shift(1) >= sBot.shift(1))
+    co = (df['close'] > rTop) & (df['close'].shift(1) <= rTop.shift(1))
+    
+    sBreak = pd.Series(np.nan, index=df.index)
+    rBreak = pd.Series(np.nan, index=df.index)
+    
+    for i in range(1, len(df)):
+        if cu.iloc[i] and pd.isna(sBreak.iloc[i-1]):
+            sBreak.iloc[i] = True
+        elif pd.notna(pl.iloc[i]):
+            sBreak.iloc[i] = np.nan
+        
+        if co.iloc[i] and pd.isna(rBreak.iloc[i-1]):
+            rBreak.iloc[i] = True
+        elif pd.notna(ph.iloc[i]):
+            rBreak.iloc[i] = np.nan
+    
+    def barssince(cond):
+        result = pd.Series(-1, index=df.index)
+        count = -1
+        for i in range(len(df)):
+            if cond.iloc[i]:
+                count = 0
+            elif count >= 0:
+                count += 1
+            result.iloc[i] = count
+        return result
+    
+    sBarsSince = barssince(sBreak.notna())
+    rBarsSince = barssince(rBreak.notna())
+    
+    s1 = (sBarsSince > input_retSince) & (df['high'] >= sTop) & (df['close'] <= sBot)
+    s2 = (sBarsSince > input_retSince) & (df['high'] >= sTop) & (df['close'] >= sBot) & (df['close'] <= sTop)
+    s3 = (sBarsSince > input_retSince) & (df['high'] >= sBot) & (df['high'] <= sTop)
+    s4 = (sBarsSince > input_retSince) & (df['high'] >= sBot) & (df['high'] <= sTop) & (df['close'] < sBot)
+    sRetActive = s1 | s2 | s3 | s4
+    
+    r1 = (rBarsSince > input_retSince) & (df['low'] <= rBot) & (df['close'] >= rTop)
+    r2 = (rBarsSince > input_retSince) & (df['low'] <= rBot) & (df['close'] <= rTop) & (df['close'] >= rBot)
+    r3 = (rBarsSince > input_retSince) & (df['low'] <= rTop) & (df['low'] >= rBot)
+    r4 = (rBarsSince > input_retSince) & (df['low'] <= rTop) & (df['low'] >= rBot) & (df['close'] > rTop)
+    rRetActive = r1 | r2 | r3 | r4
+    
+    sRetEvent = sRetActive & ~sRetActive.shift(1).fillna(False)
+    rRetEvent = rRetActive & ~rRetActive.shift(1).fillna(False)
+    
+    sRetSince = barssince(sRetEvent)
+    rRetSince = barssince(rRetEvent)
+    
+    sRetOccurred = pd.Series(False, index=df.index)
+    rRetOccurred = pd.Series(False, index=df.index)
+    sRetValid = pd.Series(False, index=df.index)
+    rRetValid = pd.Series(False, index=df.index)
+    sRetValue = pd.Series(np.nan, index=df.index)
+    rRetValue = pd.Series(np.nan, index=df.index)
+    
+    for i in range(1, len(df)):
+        if sRetEvent.iloc[i]:
+            sRetOccurred.iloc[i] = False
+            sRetValue.iloc[i] = df['low'].iloc[i]
+        elif sRetOccurred.iloc[i-1]:
+            sRetOccurred.iloc[i] = True
+        
+        if rRetEvent.iloc[i]:
+            rRetOccurred.iloc[i] = False
+            rRetValue.iloc[i] = df['high'].iloc[i]
+        elif rRetOccurred.iloc[i-1]:
+            rRetOccurred.iloc[i] = True
+        
+        if sRetSince.iloc[i] > 0 and sRetSince.iloc[i] <= input_retValid:
+            if df['close'].iloc[i] <= sRetValue.iloc[i] and not sRetOccurred.iloc[i]:
+                sRetValid.iloc[i] = True
+                sRetOccurred.iloc[i] = True
+        
+        if rRetSince.iloc[i] > 0 and rRetSince.iloc[i] <= input_retValid:
+            if df['close'].iloc[i] >= rRetValue.iloc[i] and not rRetOccurred.iloc[i]:
+                rRetValid.iloc[i] = True
+                rRetOccurred.iloc[i] = True
+        
+        if pd.notna(pl.iloc[i]) and pd.isna(pl.iloc[i-1]):
+            sRetOccurred.iloc[i] = False
+        if pd.notna(ph.iloc[i]) and pd.isna(

@@ -1,0 +1,4 @@
+def is_in_london_window(ts):
+    dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+    # Convert to London timezone
+    london_tz = timezone(timedelta(hours=1)) # This is not correct for DST

@@ -1,0 +1,5 @@
+I don't see any `strategy.entry()` calls in the provided Pine Script code. The code appears to be cut off and only contains variable declarations, input settings, type definitions, and indicator calculations (ATR, pivots, market structure detection), but no actual entry signals.
+
+However, based on the variable names present (`Bullish_Major_ChoCh`, `Bearish_Major_ChoCh`, `Bullish_Major_BoS`, `Bearish_Major_BoS`, `bullishBB`, `bearishBB`), this appears to be a market structure-based strategy where entries would theoretically be triggered by changes in these structure flags.
+
+Please provide the complete Pine Script code with the actual `strategy.entry()` calls so I can accurately convert the entry logic to Python.

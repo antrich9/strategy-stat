@@ -1,0 +1,166 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    entries = []
+    trade_num = 1
+    
+    n = len(df)
+    if n < 5:
+        return entries
+    
+    daily_highs = []
+    daily_lows = []
+    daily_closes = []
+    
+    for i in range(n):
+        current_ts = df['time'].iloc[i]
+        current_dt = datetime.fromtimestamp(current_ts, tz=timezone.utc)
+        day_start = current_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day_start.replace(hour=23, minute=59, second=59)
+        day_start_ts = int(day_start.timestamp())
+        day_end_ts = int(day_end.timestamp())
+        
+        day_mask = (df['time'] >= day_start_ts) & (df['time'] <= day_end_ts)
+        day_df = df[day_mask]
+        
+        if len(day_df) > 0:
+            daily_highs.append(day_df['high'].max())
+            daily_lows.append(day_df['low'].min())
+            daily_closes.append(day_df['close'].iloc[-1])
+        else:
+            daily_highs.append(np.nan)
+            daily_lows.append(np.nan)
+            daily_closes.append(np.nan)
+    
+    daily_high = pd.Series(daily_highs, index=df.index)
+    daily_low = pd.Series(daily_lows, index=df.index)
+    daily_close = pd.Series(daily_closes, index=df.index)
+    
+    pdh = daily_high.shift(1)
+    pdl = daily_low.shift(1)
+    pdClose = daily_close.shift(1)
+    
+    newDay = pd.Series(False, index=df.index)
+    for i in range(1, n):
+        current_dt = datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc)
+        prev_dt = datetime.fromtimestamp(df['time'].iloc[i-1], tz=timezone.utc)
+        if current_dt.date() != prev_dt.date():
+            newDay.iloc[i] = True
+    
+    bias = pd.Series(0, index=df.index)
+    
+    sweptLow = df['low'] < pdl
+    sweptHigh = df['high'] > pdh
+    brokeHigh = df['close'] > pdh
+    brokeLow = df['close'] < pdl
+    
+    for i in range(2, n):
+        if newDay.iloc[i]:
+            bias.iloc[i] = 0
+        elif sweptLow.iloc[i] and brokeHigh.iloc[i]:
+            bias.iloc[i] = 1
+        elif sweptHigh.iloc[i] and brokeLow.iloc[i]:
+            bias.iloc[i] = -1
+        elif df['low'].iloc[i] < pdl.iloc[i]:
+            bias.iloc[i] = -1
+        elif df['high'].iloc[i] > pdh.iloc[i]:
+            bias.iloc[i] = 1
+        else:
+            bias.iloc[i] = bias.iloc[i-1]
+    
+   atr_length = 20
+    high_diff = df['high'] - df['low']
+    high_diff_shift2 = df['high'].shift(2)
+    low_diff = df['low'].shift(2) - df['low']
+    low_diff2 = df['low'] - df['high'].shift(2)
+    
+    tr = pd.concat([high_diff, high_diff_shift2 - df['close'].shift(1), df['close'].shift(1) - df['low']], axis=1).max(axis=1)
+    
+    def wilder_sum(series, period):
+        result = pd.Series(np.nan, index=series.index)
+        result.iloc[period-1] = series.iloc[:period].sum()
+        alpha = 1.0 / period
+        for i in range(period, len(series)):
+            result.iloc[i] = result.iloc[i-1] * (1 - alpha) + series.iloc[i]
+        return result
+    
+    atr = wilder_sum(tr, atr_length)
+    
+    volfilt = df['volume'] > df['volume'].rolling(9).mean() * 1.5
+    atrfilt = (df['low'] - df['high'].shift(2) > atr / 1.5) | (df['low'].shift(2) - df['high'] > atr / 1.5)
+    loc1 = df['close'].rolling(54).mean()
+    loc2 = loc1 > loc1.shift(1)
+    locfiltb = loc2
+    locfilts = ~loc2
+    
+    bfvg = (df['low'] > df['high'].shift(2)) & volfilt & atrfilt & locfiltb
+    sfvg = (df['high'] < df['low'].shift(2)) & volfilt & atrfilt & locfilts
+    
+    lastFVG = 0
+    
+    for i in range(3, n):
+        if np.isnan(pdh.iloc[i]) or np.isnan(pdl.iloc[i]):
+            continue
+        
+        current_bfvg = bfvg.iloc[i]
+        current_sfvg = sfvg.iloc[i]
+        
+        if current_bfvg and lastFVG == -1:
+            direction = 'long'
+            entry_ts = int(df['time'].iloc[i])
+            entry_time = datetime.fromtimestamp(entry_ts, tz=timezone.utc).isoformat()
+            entry_price = float(df['close'].iloc[i])
+            
+            entries.append({
+                'trade_num': trade_num,
+                'direction': direction,
+                'entry_ts': entry_ts,
+                'entry_time': entry_time,
+                'entry_price_guess': entry_price,
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': entry_price,
+                'raw_price_b': entry_price
+            })
+            trade_num += 1
+            lastFVG = 1
+        elif current_sfvg and lastFVG == 1:
+            direction = 'short'
+            entry_ts = int(df['time'].iloc[i])
+            entry_time = datetime.fromtimestamp(entry_ts, tz=timezone.utc).isoformat()
+            entry_price = float(df['close'].iloc[i])
+            
+            entries.append({
+                'trade_num': trade_num,
+                'direction': direction,
+                'entry_ts': entry_ts,
+                'entry_time': entry_time,
+                'entry_price_guess': entry_price,
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': entry_price,
+                'raw_price_b': entry_price
+            })
+            trade_num += 1
+            lastFVG = -1
+        elif current_bfvg:
+            lastFVG = 1
+        elif current_sfvg:
+            lastFVG = -1
+    
+    return entries

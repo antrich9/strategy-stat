@@ -1,0 +1,59 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    df = df.copy()
+    df['datetime'] = pd.to_datetime(df['time'], unit='s', utc=True)
+    
+    # Calculate 1H high/low for external liquidity
+    df['hour'] = df['datetime'].dt.floor('1H')
+    df_1h = df.groupby('hour').agg(
+        high_1h=('high', 'max'),
+        low_1h=('low', 'min')
+    ).reset_index()
+    df_1h.columns = ['hour', 'high_1h', 'low_1h']
+    
+    df = df.merge(df_1h, on='hour', how='left')
+    
+    # External liquidity (10-period highest/lowest of 1H values)
+    df['external_liquidity_high'] = df['high_1h'].rolling(10).max()
+    df['external_liquidity_low'] = df['low_1h'].rolling(10).min()
+    
+    # 5M structure shift (10-period highest/lowest of 5M highs/lows)
+    df['highest_high_5m'] = df['high'].rolling(10).max()
+    df['lowest_low_5m'] = df['low'].rolling(10).min()
+    
+    # Structure shift crossover/crossunder
+    df['structure_shift_up'] = (df['close'] > df['highest_high_5m']) & (df['close'].shift(1) <= df['highest_high_5m'].shift(1))
+    df['structure_shift_down'] = (df['close'] < df['lowest_low_5m']) & (df['close'].shift(1) >= df['lowest_low_5m'].shift(1))
+    
+    # Fair Value Gap
+    df['fvg_up'] = df['low'].shift(2) > df['high']
+    df['fvg_down'] = df['high'].shift(2) < df['low']
+    
+    # Trading sessions (London 03:00-04:00, NY 10:00-11:00 UTC)
+    df['hour_minute'] = df['datetime'].dt.hour * 60 + df['datetime'].dt.minute
+    df['is_london'] = (df['hour_minute'] >= 180) & (df['hour_minute'] < 240)
+    df['is_ny'] = (df['hour_minute'] >= 600) & (df['hour_minute'] < 660)
+    df['is_session'] = df['is_london'] | df['is_ny']
+    
+    # Entry conditions
+    df['long_condition'] = df['is_session'] & df['structure_shift_up'] & df['fvg_up'] & (df['close'] > df['external_liquidity_high'])
+    df['short_condition'] = df['is_session'] & df['structure_shift_down'] & df['fvg_down'] & (df['close'] < df['external_liquidity_low'])
+    
+    entries = []
+    trade_num = 1
+    
+    for i in range(len(df)):
+        if pd.isna(df['external_liquidity_high'].iloc[i]):
+            continue
+        if pd.isna(df['fvg_up'].iloc[i]):
+            continue
+            
+        ts = int(df['time'].iloc[i])
+        
+        if df['long_condition'].iloc[i]:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long

@@ -1,0 +1,39 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    swingLength = 10
+    fibLevel = 0.71
+    
+    n = len(df)
+    if n <= swingLength:
+        return []
+    
+    # Precompute pivot highs and lows
+    swingH = pd.Series(np.nan, index=df.index)
+    swingL = pd.Series(np.nan, index=df.index)
+    
+    for i in range(swingLength, n):
+        windowH = df['high'].iloc[i-swingLength:i+1]
+        windowL = df['low'].iloc[i-swingLength:i+1]
+        if windowH.iloc[-1] == windowH.max():
+            swingH.iloc[i] = df['high'].iloc[i-swingLength]
+        if windowL.iloc[-1] == windowL.min():
+            swingL.iloc[i] = df['low'].iloc[i-swingLength]
+    
+    # FVG detection
+    bullFVG = df['low'] > df['high'].shift(2)
+    bearFVG = df['low'].shift(2) > df['high']
+    
+    # Higher timeframe filter (daily EMA50)
+    daily_close = df['close'].iloc[::1440]
+    daily_ema = daily_close.ewm(span=50, adjust=False).mean()
+    htf_map = daily_ema.reindex(df.index, method='ffill')
+    bullHTF = df['close'] > htf_map
+    bearHTF = df['close'] < htf_map
+    
+    # State variables
+    bias = "None"
+    fibHigh = np.nan
+    fibLow =

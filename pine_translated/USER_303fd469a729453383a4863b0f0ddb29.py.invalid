@@ -1,0 +1,117 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    # ---- Candle attributes -------------------------------------------------
+    o = df['open']
+    h = df['high']
+    l = df['low']
+    c = df['close']
+
+    body = (c - o).abs()
+    candle_range = h - l
+    upper_wick = h - np.maximum(o, c)
+    lower_wick = np.minimum(o, c) - l
+    total_wick = upper_wick + lower_wick
+    body_pct = np.where(candle_range > 0, body / candle_range, 0.0)
+
+    # ---- Respect candles ----------------------------------------------------
+    is_respect_bull = lower_wick > body * 1.5
+    is_respect_bear = upper_wick > body * 1.5
+
+    # ---- Disrespect candles -------------------------------------------------
+    wick_to_body_ratio = 0.3
+    min_body_pct = 0.6
+    is_disrespect = (body > 0) & (total_wick / body < wick_to_body_ratio) & (body_pct >= min_body_pct)
+
+    # ---- FVG detection ------------------------------------------------------
+    swing_len = 5
+    fvg_max_age = 50
+    use_fvg_filter = True
+    use_swing_filter = True
+
+    high_2 = h.shift(2)
+    low_2 = l.shift(2)
+
+    new_bull_fvg = l > high_2
+    new_bear_fvg = h < low_2
+
+    bull_fvg_top = pd.Series(np.nan, index=df.index)
+    bull_fvg_bottom = pd.Series(np.nan, index=df.index)
+    bull_fvg_bar = pd.Series(np.nan, index=df.index)
+
+    bear_fvg_top = pd.Series(np.nan, index=df.index)
+    bear_fvg_bottom = pd.Series(np.nan, index=df.index)
+    bear_fvg_bar = pd.Series(np.nan, index=df.index)
+
+    for i in df.index:
+        if new_bull_fvg.iloc[i]:
+            bull_fvg_top.iloc[i] = l.iloc[i]
+            bull_fvg_bottom.iloc[i] = high_2.iloc[i]
+            bull_fvg_bar.iloc[i] = i
+        elif i > 0:
+            bull_fvg_top.iloc[i] = bull_fvg_top.iloc[i - 1]
+            bull_fvg_bottom.iloc[i] = bull_fvg_bottom.iloc[i - 1]
+            bull_fvg_bar.iloc[i] = bull_fvg_bar.iloc[i - 1]
+
+        if new_bear_fvg.iloc[i]:
+            bear_fvg_top.iloc[i] = low_2.iloc[i]
+            bear_fvg_bottom.iloc[i] = h.iloc[i]
+            bear_fvg_bar.iloc[i] = i
+        elif i > 0:
+            bear_fvg_top.iloc[i] = bear_fvg_top.iloc[i - 1]
+            bear_fvg_bottom.iloc[i] = bear_fvg_bottom.iloc[i - 1]
+            bear_fvg_bar.iloc[i] = bear_fvg_bar.iloc[i - 1]
+
+    bull_fvg_age = df.index - bull_fvg_bar
+    bear_fvg_age = df.index - bear_fvg_bar
+
+    in_bull_fvg = (use_fvg_filter &
+                   bull_fvg_top.notna() &
+                   bull_fvg_age.notna() &
+                   (bull_fvg_age <= fvg_max_age) &
+                   (l <= bull_fvg_top) &
+                   (l >= bull_fvg_bottom))
+
+    in_bear_fvg = (use_fvg_filter &
+                   bear_fvg_top.notna() &
+                   bear_fvg_age.notna() &
+                   (bear_fvg_age <= fvg_max_age) &
+                   (h >= bear_fvg_bottom) &
+                   (h <= bear_fvg_top))
+
+    # ---- Swing high / low ---------------------------------------------------
+    raw_swing_high = pd.Series(np.nan, index=df.index)
+    raw_swing_low = pd.Series(np.nan, index=df.index)
+
+    for i in range(swing_len, len(df) - swing_len):
+        window_h = h.iloc[i - swing_len:i + swing_len + 1]
+        window_l = l.iloc[i - swing_len:i + swing_len + 1]
+        if h.iloc[i] == window_h.max():
+            raw_swing_high.iloc[i] = h.iloc[i]
+        if l.iloc[i] == window_l.min():
+            raw_swing_low.iloc[i] = l.iloc[i]
+
+    last_swing_high = raw_swing_high.ffill()
+    last_swing_low = raw_swing_low.ffill()
+
+    at_swing_low = use_swing_filter & last_swing_low.notna() & (l <= last_swing_low)
+    at_swing_high = use_swing_filter & last_swing_high.notna() & (h >= last_swing_high)
+
+    # ---- PD array gate ------------------------------------------------------
+    any_bullish_pd = ((not use_fvg_filter) and (not use_swing_filter)) | in_bull_fvg | at_swing_low
+    any_bearish_pd = ((not use_fvg_filter) and (not use_swing_filter)) | in_bear_fvg | at_swing_high
+
+    # ---- Candlestick logic signals -----------------------------------------
+    csl_bull_resp = is_respect_bull & any_bullish_pd
+    csl_bear_resp = is_respect_bear & any_bearish_pd
+    csl_bull_dis = is_disrespect & (c > o) & any_bullish_pd
+    csl_bear_dis = is_disrespect & (c < o) & any_bearish_pd
+
+    # ---- Rejection patterns -------------------------------------------------
+    def bullish_rejection(hh, ll, oo, cc):
+        r = hh - ll
+        b = (cc - oo).abs()
+        lw = np.minimum(oo, cc) - ll
+        closes_high = (cc > oo) & (r > 0) & (cc > ll + r * 0.6

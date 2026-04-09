@@ -1,0 +1,11 @@
+# Current period values
+dailyHigh = df['high'].rolling(5, closed='left').max()
+dailyLow = df['low'].rolling(5, closed='left').min()
+dailyOpen = df['open'].rolling(5, closed='left').max()
+dailyClose = df['close'].rolling(5, closed='left').max()
+
+# Previous period values (shifted)
+dailyHigh1 = dailyHigh.shift(1)
+dailyLow1 = dailyLow.shift(1)
+dailyHigh2 = dailyHigh.shift(2)
+dailyLow2 = dailyLow.shift(2)

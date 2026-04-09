@@ -1,0 +1,2 @@
+def shift_series(s, offset):
+    return s.shift(offset)

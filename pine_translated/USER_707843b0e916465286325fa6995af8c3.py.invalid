@@ -1,0 +1,57 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    entries = []
+    trade_num = 0
+
+    lookback = 20
+    tradeDirection = 'Both'
+
+    sBot = np.nan
+    rTop = np.nan
+
+    highs = df['high'].values
+    lows = df['low'].values
+    n = len(df)
+
+    pl = pd.Series(np.nan, index=df.index)
+    ph = pd.Series(np.nan, index=df.index)
+
+    for i in range(lookback, n - lookback):
+        is_high = True
+        is_low = True
+        for j in range(i - lookback, i + lookback + 1):
+            if j != i:
+                if highs[j] >= highs[i]:
+                    is_high = False
+                if lows[j] <= lows[i]:
+                    is_low = False
+        if is_high:
+            ph.iloc[i] = highs[i]
+        if is_low:
+            pl.iloc[i] = lows[i]
+
+    for i in range(lookback, len(df)):
+        ts = df['time'].iloc[i]
+
+        if not pd.isna(pl.iloc[i]):
+            sBot = pl.iloc[i]
+        if not pd.isna(ph.iloc[i]):
+            rTop = ph.iloc[i]
+
+        cu = df['close'].iloc[i] < sBot and df['close'].iloc[i-1] >= sBot
+        co = df['close'].iloc[i] > rTop and df['close'].iloc[i-1] <= rTop
+
+        if cu and (tradeDirection == 'Both' or tradeDirection == 'Long'):
+            trade_num += 1
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': int(ts),
+                'entry_time': datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                'entry_price_guess': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                '

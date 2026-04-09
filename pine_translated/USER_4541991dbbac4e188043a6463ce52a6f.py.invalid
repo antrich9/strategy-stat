@@ -1,0 +1,15 @@
+def barssince(series):
+    """Calculate bars since condition was true"""
+    result = np.full(len(series), np.inf)
+    last_true_idx = -1
+    
+    for i in range(len(series)):
+        if series.iloc[i]:
+            result[i] = 0
+            last_true_idx = i
+        elif last_true_idx >= 0:
+            result[i] = i - last_true_idx
+        else:
+            result[i] = np.nan
+    
+    return pd.Series(result, index=series.index)

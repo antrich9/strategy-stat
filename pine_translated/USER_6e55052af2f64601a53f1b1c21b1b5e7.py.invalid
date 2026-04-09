@@ -1,0 +1,58 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    # Validate required columns
+    required = {'time', 'open', 'high', 'low', 'close', 'volume'}
+    if not required.issubset(df.columns):
+        raise ValueError(f"DataFrame must contain columns: {required}")
+
+    # Ensure chronological order
+    df = df.sort_values('time').reset_index(drop=True)
+
+    # Up/down candles
+    up = df['close'] > df['open']
+    down = df['close'] < df['open']
+
+    # Shifted series for OB and FVG conditions
+    down_shift1 = down.shift(1)
+    up_shift1 = up.shift(1)
+    high_shift1 = df['high'].shift(1)
+    low_shift1 = df['low'].shift(1)
+    high_shift2 = df['high'].shift(2)
+    low_shift2 = df['low'].shift(2)
+
+    # Order Block (OB) conditions
+    ob_up = down_shift1 & up & (df['close'] > high_shift1)
+    ob_down = up_shift1 & down & (df['close'] < low_shift1)
+
+    # Fair Value Gap (FVG) conditions
+    fvg_up = df['low'] > high_shift2
+    fvg_down = df['high'] < low_shift2
+
+    # Entry signals
+    entry_long = (ob_up & fvg_up).fillna(False)
+    entry_short = (ob_down & fvg_down).fillna(False)
+
+    entries = []
+    trade_num = 1
+
+    for i in range(len(df)):
+        if entry_long.iloc[i]:
+            ts = int(df['time'].iloc[i])
+            entry_time = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+            entry_price = float(df['close'].iloc[i])
+            entries.append({
+                'trade_num':

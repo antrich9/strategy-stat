@@ -1,0 +1,88 @@
+import pandas as pd
+   import numpy as np
+   from datetime import datetime, timezone
+
+   def generate_entries(df: pd.DataFrame) -> list:
+       # Ensure DataFrame is sorted by time
+       df = df.sort_values('time').reset_index(drop=True)
+
+       # Compute EMA (50-period)
+       ema = df['close'].ewm(span=50, adjust=False).mean()
+
+       # Compute swing high and swing low
+       # is_swing_high: true when current high is the highest in the last 5 bars
+       is_swing_high = df['high'] == df['high'].rolling(5).max()
+       is_swing_low = df['low'] == df['low'].rolling(5).min()
+
+       # Forward fill to get the most recent swing high and low
+       last_swing_high = df['high'].where(is_swing_high).ffill()
+       last_swing_low = df['low'].where(is_swing_low).ffill()
+
+       # Fibonacci retracement level (0.5)
+       fib_level = 0.5
+       pullback_long = last_swing_low + fib_level * (last_swing_high - last_swing_low)
+       pullback_short = last_swing_high - fib_level * (last_swing_high - last_swing_low)
+
+       # Entry conditions
+       long_condition = df['close'] > ema
+       short_condition = df['close'] < ema
+
+       long_entry = long_condition & (df['close'] > pullback_long)
+       short_entry = short_condition & (df['close'] < pullback_short)
+
+       # Create boolean series for entries
+       # We will iterate and generate entries for every true signal, but we might want to skip if the indicator is NaN.
+       # Let's create a series that is true only when the conditions are true and the required indicators are not NaN.
+
+       # First, let's create a mask for valid bars (where all required series are not NaN)
+       # We need: ema, last_swing_high, last_swing_low, pullback_long, pullback_short
+       # But note: last_swing_high and last_swing_low might be NaN until the first swing is detected.
+       # Also, ema might be NaN for the first few bars.
+
+       valid = ema.notna() & last_swing_high.notna() & last_swing_low.notna() & pullback_long.notna() & pullback_short.notna()
+
+       # Then, the entry signals are only valid when valid is true.
+       long_entry_valid = long_entry & valid
+       short_entry_valid = short_entry & valid
+
+       # Now, we iterate and generate entries. We don't simulate position state, so we generate an entry for every valid signal.
+       entries = []
+       trade_num = 1
+
+       for i in range(len(df)):
+           if long_entry_valid.iloc[i]:
+               entry_ts = int(df['time'].iloc[i])
+               entry_time = datetime.fromtimestamp(entry_ts, tz=timezone.utc).isoformat()
+               entry_price = df['close'].iloc[i]
+               entries.append({
+                   'trade_num': trade_num,
+                   'direction': 'long',
+                   'entry_ts': entry_ts,
+                   'entry_time': entry_time,
+                   'entry_price_guess': entry_price,
+                   'exit_ts': 0,
+                   'exit_time': '',
+                   'exit_price_guess': 0.0,
+                   'raw_price_a': entry_price,
+                   'raw_price_b': entry_price
+               })
+               trade_num += 1
+           elif short_entry_valid.iloc[i]:
+               entry_ts = int(df['time'].iloc[i])
+               entry_time = datetime.fromtimestamp(entry_ts, tz=timezone.utc).isoformat()
+               entry_price = df['close'].iloc[i]
+               entries.append({
+                   'trade_num': trade_num,
+                   'direction': 'short',
+                   'entry_ts': entry_ts,
+                   'entry_time': entry_time,
+                   'entry_price_guess': entry_price,
+                   'exit_ts': 0,
+                   'exit_time': '',
+                   'exit_price_guess': 0.0,
+                   'raw_price_a': entry_price,
+                   'raw_price_b': entry_price
+               })
+               trade_num += 1
+
+       return entries

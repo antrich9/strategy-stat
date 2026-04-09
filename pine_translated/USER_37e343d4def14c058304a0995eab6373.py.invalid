@@ -1,0 +1,9 @@
+bias = np.zeros(len(df), dtype=int)
+
+bullish_cond = sweptLow & brokeHigh
+bearish_cond = sweptHigh & brokeLow
+
+bias = np.where(bullish_cond, 1, 
+                np.where(bearish_cond, -1,
+                         np.where(sweptLow, -1,
+                                  np.where(sweptHigh, 1, 0))))

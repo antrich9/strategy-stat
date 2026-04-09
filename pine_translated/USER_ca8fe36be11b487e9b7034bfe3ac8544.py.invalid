@@ -1,0 +1,3 @@
+dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+hour = dt.hour
+minute = dt.minute

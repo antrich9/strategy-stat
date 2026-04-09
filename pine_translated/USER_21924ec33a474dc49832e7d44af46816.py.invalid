@@ -1,0 +1,92 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    close = df['close']
+    high = df['high']
+    low = df['low']
+    open_price = df['open']
+    volume = df['volume']
+
+    # Parameters
+    periodRSI_Metro = 14
+    stepSizeFast_Metro = 5
+    stepSizeSlow_Metro = 15
+    useHeartbeat_Metro = True
+    crossConfirm_Metro = True
+    inverseHeartbeat_Metro = False
+
+    ADX_Length_FVMA = 2
+    Weighting_FVMA = 10.0
+    MA_Length_FVMA = 6
+    useFVMA = True
+    crossFVMA = True
+    inverseFVMA = False
+
+    vfilength = 130
+    coef = 0.2
+    vcoef = 2.5
+    signalLength = 5
+
+    length = 22
+    mult = 3
+    wicks = True
+
+    # Wilder RSI for Metro
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = (-delta).where(delta < 0, 0.0)
+    avg_gain = gain.ewm(alpha=1/periodRSI_Metro, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/periodRSI_Metro, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    rsiLine_Metro = 100 - (100 / (1 + rs))
+
+    # StepRSI Fast Line
+    stepRSIFast_Metro = pd.Series(index=df.index, dtype=float)
+    stepRSIFast_Metro.iloc[0] = rsiLine_Metro.iloc[0]
+    for i in range(1, len(df)):
+        if pd.isna(stepRSIFast_Metro.iloc[i-1]):
+            prev = rsiLine_Metro.iloc[i-1]
+        else:
+            prev = stepRSIFast_Metro.iloc[i-1]
+        stepRSIFast_Metro.iloc[i] = max(min(prev, rsiLine_Metro.iloc[i] + stepSizeFast_Metro), rsiLine_Metro.iloc[i] - stepSizeFast_Metro)
+
+    # StepRSI Slow Line
+    stepRSISlow_Metro = pd.Series(index=df.index, dtype=float)
+    stepRSISlow_Metro.iloc[0] = rsiLine_Metro.iloc[0]
+    for i in range(1, len(df)):
+        if pd.isna(stepRSISlow_Metro.iloc[i-1]):
+            prev = rsiLine_Metro.iloc[i-1]
+        else:
+            prev = stepRSISlow_Metro.iloc[i-1]
+        stepRSISlow_Metro.iloc[i] = max(min(prev, rsiLine_Metro.iloc[i] + stepSizeSlow_Metro), rsiLine_Metro.iloc[i] - stepSizeSlow_Metro)
+
+    # Heartbeat conditions for Metro
+    buySignal_Metro = stepRSIFast_Metro > stepRSISlow_Metro
+    sellSignal_Metro = stepRSIFast_Metro < stepRSISlow_Metro
+
+    basicLongCondition_Metro = buySignal_Metro
+    basicShortCondition_Metro = sellSignal_Metro
+
+    if useHeartbeat_Metro:
+        heartbeatLong_Metro = basicShortCondition_Metro if inverseHeartbeat_Metro else basicLongCondition_Metro
+        heartbeatShort_Metro = basicLongCondition_Metro if inverseHeartbeat_Metro else basicShortCondition_Metro
+    else:
+        heartbeatLong_Metro = pd.Series(False, index=df.index)
+        heartbeatShort_Metro = pd.Series(False, index=df.index)
+
+    heartbeatLongFinal_Metro = (~heartbeatLong_Metro.shift(1).fillna(False) & heartbeatLong_Metro) if crossConfirm_Metro else heartbeatLong_Metro
+    heartbeatShortFinal_Metro = (~heartbeatShort_Metro.shift(1).fillna(False) & heartbeatShort_Metro) if crossConfirm_Metro else heartbeatShort_Metro
+
+    # FVMA
+    hi = high
+    hi1 = high.shift(1)
+    lo = low
+    lo1 = low.shift(1)
+    close1 = close.shift(1)
+
+    bulls1 = 0.5 * (np.abs(hi - hi1) + hi - hi1)
+    bears1 = 0.5 * (np.abs(lo1 - lo) + lo1 - lo)
+
+    bulls = pd.Series(np.where(bulls1 > bears1, 0.0, np.where(bulls

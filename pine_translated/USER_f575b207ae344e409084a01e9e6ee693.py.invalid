@@ -1,0 +1,47 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    # RSI using Wilder's method
+    delta = df['close'].diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = (-delta).where(delta < 0, 0.0)
+    avg_gain = gain.ewm(alpha=1.0/14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1.0/14, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+
+    # ATR using Wilder's method
+    high_low = df['high'] - df['low']
+    high_close = (df['high'] - df['close'].shift(1)).abs()
+    low_close = (df['low'] - df['close'].shift(1)).abs()
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1.0/20, adjust=False).mean() / 1.5
+
+    # Volume filter
+    vol_sma = df['volume'].rolling(9).mean()
+    vol_filt = df['volume'].shift(1) > vol_sma * 1.5
+
+    # Trend filter (54-bar EMA)
+    ema54 = df['close'].ewm(span=54, adjust=False).mean()
+    bull_trendfilt = ema54 > ema54.shift(1)
+    bear_trendfilt = ema54 < ema54.shift(1)
+
+    # Bullish FVG
+    bull_fvg = (df['low'] > df['high'].shift(2)) & vol_filt & (df['low'] > df['high'].shift(2) + atr) & bull_trendfilt
+    # Bearish FVG
+    bear_fvg = (df['high'] < df['low'].shift(2)) & vol_filt & (df['high'] < df['low'].shift(2) - atr) & bear_trendfilt
+
+    # Bullish OB
+    bull_ob = (df['close'].shift(2) < df['open'].shift(2)) & (df['close'].shift(1) > df['open'].shift(1)) & (df['close'] > df['high'].shift(1))
+    # Bearish OB
+    bear_ob = (df['close'].shift(2) > df['open'].shift(2)) & (df['close'].shift(1) < df['open'].shift(1)) & (df['close'] < df['low'].shift(1))
+    # Bullish FVG (core)
+    bull_fvg_core = df['low'] > df['high'].shift(2)
+    # Bearish FVG (core)
+    bear_fvg_core = df['high'] < df['low'].shift(2)
+    # Bullish Imbalance
+    bull_imb = (df['low'].shift(2) <= df['open'].shift(1)) & (df['high'] >= df['close'].shift(1)) & (df['close'] < df['low'].shift(1))
+    # Bearish Imbalance
+    bear_imb = (df['high'].shift(2) >= df['open'].shift(

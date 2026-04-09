@@ -1,0 +1,17 @@
+def ehlers_two_pole_super_smoother(price, period):
+    n = len(price)
+    a1 = np.exp(-1.414 * np.pi / period)
+    b1 = 2 * a1 * np.cos(1.414 * np.pi / period)
+    coef2 = b1
+    coef3 = -a1 * a1
+    coef1 = 1 - coef2 - coef3
+    filt = np.zeros(n)
+    for i in range(n):
+        if i < 3:
+            filt[i] = price.iloc[i]
+        else:
+            filt[i] = coef1 * price.iloc[i] + coef2 * filt[i-1] + coef3 * filt[i-2]
+    trigger = pd.Series(filt).shift(1).fillna(0)
+    baseline_long = pd.Series(filt) > trigger
+    baseline_short = pd.Series(filt) < trigger
+    return baseline_long, baseline_short

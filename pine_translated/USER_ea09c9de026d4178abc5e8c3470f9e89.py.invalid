@@ -1,0 +1,49 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    # ── Ehlers 2‑Pole Super Smoother Filter (E2PSS) ──────────────────────────
+    period_e2pss = 15
+    a1 = np.exp(-1.414 * np.pi / period_e2pss)
+    b1 = 2.0 * a1 * np.cos(1.414 * np.pi / period_e2pss)
+    coef2 = b1
+    coef3 = -a1 * a1
+    coef1 = 1.0 - coef2 - coef3
+
+    price_e2pss = (df['high'] + df['low']) / 2.0
+
+    n = len(df)
+    filt2 = np.zeros(n)
+    filt2[0] = price_e2pss.iloc[0]
+    filt2[1] = price_e2pss.iloc[1]
+    filt2[2] = price_e2pss.iloc[2]
+    for i in range(3, n):
+        filt2[i] = coef1 * price_e2pss.iloc[i] + coef2 * filt2[i-1] + coef3 * filt2[i-2]
+
+    filt2_s = pd.Series(filt2, index=df.index)
+    trigger = filt2_s.shift(1)
+
+    signal_long_e2pss = filt2_s > trigger
+    signal_short_e2pss = filt2_s < trigger
+
+    # inverseE2PSS = false → final signals unchanged
+    final_long_e2pss = signal_long_e2pss
+    final_short_e2pss = signal_short_e2pss
+
+    # ── TDFI (Trend Direction & Force Index) ─────────────────────────────────
+    price_tdfi = df['close'] * 1000.0
+    mma = price_tdfi.ewm(span=13, adjust=False).mean()
+    smma = mma.ewm(span=13, adjust=False).mean()
+
+    impet_mma = mma - mma.shift(1)
+    impet_smma = smma - smma.shift(1)
+    div_ma = (mma - smma).abs()
+    aver_impet = (impet_mma + impet_smma) / 2.0
+
+    tdf_raw = div_ma * (aver_impet ** 3.0)
+    highest_abs_tdf = tdf_raw.abs().rolling(39).max()
+    tdf = tdf_raw / highest_abs_tdf
+    tdf = tdf.replace([np.inf, -np.inf], np.nan)
+
+    filter_high =

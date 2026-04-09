@@ -1,0 +1,6 @@
+ts = pd.to_datetime(df['time'], unit='s', utc=True)
+# Determine DST based on the condition
+month = ts.month
+day = ts.day
+dow = ts.dayofweek  # Monday=0, Sunday=6
+is_dst = (month >= 3) & ( (month == 3) & (dow == 6) & (day >= 25) | (month > 3) ) & (month <= 10) & ( (month == 10) & (dow == 6) & (day < 25) | (month < 10) )

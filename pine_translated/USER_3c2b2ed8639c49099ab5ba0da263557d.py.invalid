@@ -1,0 +1,238 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    
+    # Parameters from Pine Script
+    ny_open_hour = 9
+    ny_open_minute = 30
+    manip_minutes = 5
+    enable_longs = True
+    enable_shorts = True
+    ob_entry_method = "Midpoint"
+    rr = 2.0
+    lookback_ob = 10
+    max_trades_per_day = 1
+    use_fixed_stop = False
+    fixed_sl_choice = "Off"
+    unit_size = 0.25
+    
+    results = []
+    trade_num = 1
+    
+    # Compute body information
+    df['body_top'] = df[['open', 'close']].max(axis=1)
+    df['body_bot'] = df[['open', 'close']].min(axis=1)
+    df['p_body_top'] = df['body_top'].shift(1)
+    df['p_body_bot'] = df['body_bot'].shift(1)
+    df['bull_body'] = df['close'] > df['open']
+    df['bear_body'] = df['close'] < df['open']
+    df['bull_engulf'] = df['bull_body'] & (df['body_top'] >= df['p_body_top']) & (df['body_bot'] <= df['p_body_bot'])
+    df['bear_engulf'] = df['bear_body'] & (df['body_top'] >= df['p_body_top']) & (df['body_bot'] <= df['p_body_bot'])
+    
+    # State variables
+    trades_long_today = 0
+    trades_short_today = 0
+    prev_day = None
+    long_setup_active = False
+    short_setup_active = False
+    long_entry_price = np.nan
+    short_entry_price = np.nan
+    long_sl = np.nan
+    long_tp = np.nan
+    short_sl = np.nan
+    short_tp = np.nan
+    ob_h = np.nan
+    ob_l = np.nan
+    ob_entry = np.nan
+    
+    # Helper function to compute NY time from Unix timestamp
+    def get_ny_time_components(ts):
+        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+        # Simple conversion - in real implementation would need proper timezone handling
+        ny_hour = (dt.hour - 5) % 24  # UTC to NY (approximately)
+        ny_min = dt.minute
+        return ny_hour, ny_min
+    
+    # Helper function to find last opposite candle index
+    def find_last_opp_candle_ix(current_idx, lookback, want_bear):
+        for i in range(1, lookback + 1):
+            idx = current_idx - i
+            if idx < 0:
+                break
+            cond = df.loc[idx, 'close'] < df.loc[idx, 'open'] if want_bear else df.loc[idx, 'close'] > df.loc[idx, 'open']
+            if pd.isna(df.loc[idx, 'close']):
+                continue
+            return idx
+        return None
+    
+    # Iterate through dataframe
+    for i in range(len(df)):
+        row = df.iloc[i]
+        ts = row['time']
+        ny_hour, ny_min = get_ny_time_components(ts)
+        
+        # Determine if in NY trading hours
+        mins_from_open = (ny_hour * 60 + ny_min) - (ny_open_hour * 60 + ny_open_minute)
+        in_rth = mins_from_open >= 0 and mins_from_open <= 390  # 9:30 to 16:00
+        in_manip = mins_from_open >= 0 and mins_from_open < manip_minutes
+        after_manip = mins_from_open >= manip_minutes
+        
+        # Check for new day
+        current_day = datetime.fromtimestamp(ts, tz=timezone.utc).date()
+        if prev_day is not None and current_day != prev_day:
+            trades_long_today = 0
+            trades_short_today = 0
+            long_setup_active = False
+            short_setup_active = False
+            long_entry_price = np.nan
+            short_entry_price = np.nan
+            long_sl = np.nan
+            long_tp = np.nan
+            short_sl = np.nan
+            short_tp = np.nan
+            ob_h = np.nan
+            ob_l = np.nan
+            ob_entry = np.nan
+        
+        prev_day = current_day
+        
+        # Only process during NY trading hours
+        if not in_rth:
+            long_setup_active = False
+            short_setup_active = False
+            ob_h = np.nan
+            ob_l = np.nan
+            ob_entry = np.nan
+            continue
+        
+        can_signal = in_rth and after_manip
+        
+        # Check for engulfing patterns and create setups
+        if can_signal:
+            if enable_longs and df.loc[i, 'bull_engulf'] and trades_long_today < max_trades_per_day:
+                opp_idx = find_last_opp_candle_ix(i, lookback_ob, True)
+                if opp_idx is not None:
+                    ob_h = df.loc[opp_idx, 'high']
+                    ob_l = df.loc[opp_idx, 'low']
+                    if ob_entry_method == "Midpoint":
+                        ob_entry = (ob_h + ob_l) / 2
+                    elif ob_entry_method == "Open":
+                        ob_entry = df.loc[opp_idx, 'open']
+                    else:
+                        ob_entry = ob_h
+                    
+                    if use_fixed_stop and fixed_sl_choice != "Off":
+                        if fixed_sl_choice == "+50":
+                            fixed_units = 50
+                        elif fixed_sl_choice == "+100":
+                            fixed_units = 100
+                        else:
+                            fixed_units = 200
+                        risk_price = ob_entry - (fixed_units * unit_size)
+                    else:
+                        risk_price = min(df.loc[i, 'low'], ob_l)
+                    
+                    r = ob_entry - risk_price
+                    tp_price = ob_entry + (rr * r)
+                    long_entry_price = ob_entry
+                    long_sl = risk_price
+                    long_tp = tp_price
+                    long_setup_active = True
+            
+            if enable_shorts and df.loc[i, 'bear_engulf'] and trades_short_today < max_trades_per_day:
+                opp_idx = find_last_opp_candle_ix(i, lookback_ob, False)
+                if opp_idx is not None:
+                    ob_h = df.loc[opp_idx, 'high']
+                    ob_l = df.loc[opp_idx, 'low']
+                    if ob_entry_method == "Midpoint":
+                        ob_entry = (ob_h + ob_l) / 2
+                    elif ob_entry_method == "Open":
+                        ob_entry = df.loc[opp_idx, 'open']
+                    else:
+                        ob_entry = ob_l
+                    
+                    if use_fixed_stop and fixed_sl_choice != "Off":
+                        if fixed_sl_choice == "+50":
+                            fixed_units = 50
+                        elif fixed_sl_choice == "+100":
+                            fixed_units = 100
+                        else:
+                            fixed_units = 200
+                        risk_price = ob_entry + (fixed_units * unit_size)
+                    else:
+                        risk_price = max(df.loc[i, 'high'], ob_h)
+                    
+                    r = risk_price - ob_entry
+                    tp_price = ob_entry - (rr * r)
+                    short_entry_price = ob_entry
+                    short_sl = risk_price
+                    short_tp = tp_price
+                    short_setup_active = True
+        
+        # Check for entry conditions
+        if long_setup_active and pd.isna(df.loc[i, 'position_size']):
+            if row['low'] <= long_entry_price and row['high'] >= long_entry_price:
+                entry_ts = int(ts)
+                entry_time = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+                entry_price = long_entry_price
+                
+                results.append({
+                    'trade_num': trade_num,
+                    'direction': 'long',
+                    'entry_ts': entry_ts,
+                    'entry_time': entry_time,
+                    'entry_price_guess': entry_price,
+                    'exit_ts': 0,
+                    'exit_time': '',
+                    'exit_price_guess': 0.0,
+                    'raw_price_a': entry_price,
+                    'raw_price_b': entry_price
+                })
+                
+                trade_num += 1
+                trades_long_today += 1
+                long_setup_active = False
+        
+        if short_setup_active and pd.isna(df.loc[i, 'position_size']):
+            if row['low'] <= short_entry_price and row['high'] >= short_entry_price:
+                entry_ts = int(ts)
+                entry_time = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+                entry_price = short_entry_price
+                
+                results.append({
+                    'trade_num': trade_num,
+                    'direction': 'short',
+                    'entry_ts': entry_ts,
+                    'entry_time': entry_time,
+                    'entry_price_guess': entry_price,
+                    'exit_ts': 0,
+                    'exit_time': '',
+                    'exit_price_guess': 0.0,
+                    'raw_price_a': entry_price,
+                    'raw_price_b': entry_price
+                })
+                
+                trade_num += 1
+                trades_short_today += 1
+                short_setup_active = False
+    
+    return results
+
+I need to reconsider the data structure. The DataFrame contains standard OHLCV columns with time as a Unix timestamp. My helper function for extracting NY time components needs proper implementation to convert the UTC timestamp to New York time.
+
+Converting UTC to NY requires subtracting 5 hours during standard time or 4 hours during daylight saving time. Since this is a simplified backtester, I can apply a straightforward offset rather than implementing full DST logic.
+
+I'll create a helper to detect whether a given timestamp falls during daylight saving time, then apply the appropriate UTC offset—either -5 or -4 hours depending on the date.

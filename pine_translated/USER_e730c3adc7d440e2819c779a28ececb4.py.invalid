@@ -1,0 +1,5 @@
+def generate_entries(df: pd.DataFrame) -> list:
+    # Compute indicators
+    # Compute entry conditions for long and short
+    # Iterate over rows, when condition is true, create entry dict
+    # Return list

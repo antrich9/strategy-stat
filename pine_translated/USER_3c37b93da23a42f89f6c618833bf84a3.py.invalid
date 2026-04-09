@@ -1,0 +1,67 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone, timedelta
+
+def generate_entries(df: pd.DataFrame) -> list:
+    df = df.copy()
+    entries = []
+    trade_num = 0
+    last_fvg = 0
+    consec_bull = 0
+    consec_bear = 0
+
+    # Calculate dynamic threshold: ta.cum((high - low) / low) / bar_index
+    pct_change = (df['high'] - df['low']) / df['low']
+    cum_pct = pct_change.cumsum()
+    bar_index = np.arange(len(df))
+    threshold = cum_pct / (bar_index + 1)
+
+    # Bullish FVG: low > high[2] and close[1] > high[2] and gap > threshold
+    bull_fvg = (df['low'] > df['high'].shift(2)) & \
+               (df['close'].shift(1) > df['high'].shift(2)) & \
+               ((df['low'] - df['high'].shift(2)) / df['high'].shift(2) > threshold)
+
+    # Bearish FVG: high < low[2] and close[1] < low[2] and gap > threshold
+    bear_fvg = (df['high'] < df['low'].shift(2)) & \
+               (df['close'].shift(1) < df['low'].shift(2)) & \
+               ((df['low'].shift(2) - df['high']) / df['high'] > threshold)
+
+    # Convert to London time for window check
+    df['dt_london'] = pd.to_datetime(df['time'], unit='s', utc=True).dt.tz_convert('Europe/London')
+    df['hour'] = df['dt_london'].dt.hour
+    df['minute'] = df['dt_london'].dt.minute
+
+    # Window 1: 07:00-11:45, Window 2: 14:00-14:45
+    in_window = ((df['hour'] == 7) & (df['minute'] <= 45)) | \
+                (df['hour'].isin([8, 9, 10])) | \
+                ((df['hour'] == 11) & (df['minute'] <= 45)) | \
+                ((df['hour'] == 14) & (df['minute'] <= 45))
+
+    for i in range(2, len(df)):
+        bull = bool(bull_fvg.iloc[i])
+        bear = bool(bear_fvg.iloc[i])
+        window = bool(in_window.iloc[i])
+
+        if not window:
+            continue
+
+        ts = int(df['time'].iloc[i])
+        entry_price = float(df['close'].iloc[i])
+
+        if bull:
+            if last_fvg == -1:
+                trade_num += 1
+                entries.append({
+                    'trade_num': trade_num,
+                    'direction': 'long',
+                    'entry_ts': ts,
+                    'entry_time': datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                    'entry_price_guess': entry_price,
+                    'exit_ts': 0,
+                    'exit_time': '',
+                    'exit_price_guess': 0.0,
+                    'raw_price_a': entry_price,
+                    'raw_price_b': entry_price
+                })
+
+            consec_bull +=

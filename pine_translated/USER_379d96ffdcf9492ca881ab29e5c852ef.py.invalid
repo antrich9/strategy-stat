@@ -1,0 +1,4 @@
+BB_basis = df['close'].rolling(20).mean()
+BB_std = df['close'].rolling(20).std()  # stdev with length_TTMS
+BB_upper = BB_basis + 2.0 * BB_std
+BB_lower = BB_basis - 2.0 * BB_std

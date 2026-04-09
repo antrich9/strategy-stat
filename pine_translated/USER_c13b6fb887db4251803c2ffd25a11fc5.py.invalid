@@ -1,0 +1,13 @@
+def barssince(cond):
+    result = np.zeros(len(cond))
+    counter = -1
+    for i in range(len(cond)):
+        if i == 0:
+            counter = -1
+        else:
+            if cond.iloc[i]:
+                counter = 0
+            elif counter >= 0:
+                counter += 1
+        result[i] = counter
+    return pd.Series(result, index=cond.index)

@@ -1,0 +1,54 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    df = df.copy()
+    df['datetime'] = pd.to_datetime(df['time'], unit='s', utc=True)
+    df = df.set_index('datetime').sort_index()
+    
+    # Resample to 4H
+    ohlc_4h = df[['open', 'high', 'low', 'close', 'volume']].resample('4h').agg({
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last',
+        'volume': 'sum'
+    }).dropna()
+    
+    high_4h = ohlc_4h['high']
+    low_4h = ohlc_4h['low']
+    close_4h = ohlc_4h['close']
+    volume_4h = ohlc_4h['volume']
+    
+    # Volume filter (4H)
+    vol_sma_4h = volume_4h.rolling(9).mean()
+    vol_filt = volume_4h.shift(1) > vol_sma_4h.shift(1) * 1.5
+    
+    # ATR filter (4H, Wilder's smoothing)
+    high_low = high_4h - low_4h
+    high_close_prev = (high_4h - close_4h.shift(1)).abs()
+    low_close_prev = (low_4h - close_4h.shift(1)).abs()
+    true_range = pd.concat([high_low, high_close_prev, low_close_prev], axis=1).max(axis=1)
+    atr_4h = true_range.ewm(alpha=1/14, adjust=False).mean()
+    atr_filt_val = atr_4h.shift(1) / 1.5
+    
+    # Bullish FVG: low > high[2] and gap > atr_filt_val
+    bull_fvg_gap = low_4h - high_4h.shift(2)
+    bull_fvg = (low_4h > high_4h.shift(2)) & vol_filt & (bull_fvg_gap > atr_filt_val)
+    
+    # Bearish FVG: high < low[2] and gap > atr_filt_val
+    bear_fvg_gap = high_4h - low_4h.shift(2)
+    bear_fvg = (high_4h < low_4h.shift(2)) & vol_filt & (bear_fvg_gap > atr_filt_val)
+    
+    # Map 4H data back to 1H bars
+    df['4h_period'] = df.index.floor('4h')
+    
+    df['bfvg1'] = df['4h_period'].map(bull_fvg.reindex(ohlc_4h.index)).ffill().fillna(False)
+    df['sfvg1'] = df['4h_period'].map(bear_fvg.reindex(ohlc_4h.index)).ffill().fillna(False)
+    df['is_new_4h'] = df['4h_period'] != df['4h_period'].shift(1)
+    
+    # Previous Day High/Low
+    daily_h = df['high'].resample('D').max().shift(1, freq='D')
+    daily_l = df['low'].resample('D').min().shift(1, freq='D')
+    df['pdh'] = df.index.map(lambda x: daily_h.get(x.replace(hour=0), np.nan

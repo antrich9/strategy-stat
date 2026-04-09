@@ -1,0 +1,101 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+
+    def get_4h_bucket_start(ts):
+        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+        bucket_start = dt.replace(hour=(dt.hour // 4) * 4, minute=0, second=0, microsecond=0)
+        return int(bucket_start.timestamp())
+
+    df = df.copy()
+    df['bucket_start'] = df['time'].apply(get_4h_bucket_start)
+
+    df_4h = df.groupby('bucket_start').agg({
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last',
+        'volume': 'sum'
+    }).reset_index()
+
+    df_4h['high_2'] = df_4h['high'].shift(2)
+    df_4h['low_2'] = df_4h['low'].shift(2)
+
+    df_4h['vol_sma9'] = df_4h['volume'].rolling(9).mean()
+    df_4h['volfilt'] = df_4h['volume'].shift(1) > df_4h['vol_sma9'] * 1.5
+
+    df_4h['tr'] = np.maximum(
+        df_4h['high'] - df_4h['low'],
+        np.maximum(
+            abs(df_4h['high'] - df_4h['close'].shift(1)),
+            abs(df_4h['low'] - df_4h['close'].shift(1))
+        )
+    )
+    df_4h['atr'] = df_4h['tr'].ewm(alpha=1/20, adjust=False).mean()
+    df_4h['atr_filt_val'] = df_4h['atr'] / 1.5
+
+    df_4h['sma54'] = df_4h['close'].rolling(54).mean()
+    df_4h['trend_up'] = df_4h['sma54'] > df_4h['sma54'].shift(1)
+
+    df_4h['bull_fvg'] = (
+        (df_4h['low'] > df_4h['high_2']) &
+        df_4h['volfilt'] &
+        ((df_4h['low'] - df_4h['high_2'] > df_4h['atr_filt_val']) | (df_4h['low_2'] - df_4h['high'] > df_4h['atr_filt_val'])) &
+        df_4h['trend_up']
+    )
+
+    df_4h['bear_fvg'] = (
+        (df_4h['high'] < df_4h['low_2']) &
+        df_4h['volfilt'] &
+        ((df_4h['high_2'] - df_4h['low'] > df_4h['atr_filt_val']) | (df_4h['high'] - df_4h['low_2'] > df_4h['atr_filt_val'])) &
+        ~df_4h['trend_up']
+    )
+
+    df_4h = df_4h.reset_index(drop=True)
+    entries = []
+    trade_num = 1
+    prev_4h_start = None
+
+    for i in range(3, len(df)):
+        bucket = df['bucket_start'].iloc[i]
+        if prev_4h_start is not None and bucket != prev_4h_start:
+            idx_4h = df_4h[df_4h['bucket_start'] == bucket].index
+            if len(idx_4h) > 0:
+                j = idx_4h[0]
+                if j >= 2:
+                    bfvg = df_4h['bull_fvg'].iloc[j]
+                    sfvg = df_4h['bear_fvg'].iloc[j]
+                    if bfvg:
+                        entry_price = df['close'].iloc[i]
+                        entry = {
+                            'trade_num': trade_num,
+                            'direction': 'long',
+                            'entry_ts': int(df['time'].iloc[i]),
+                            'entry_time': datetime.fromtimestamp(df['time'].iloc[i], tz=timezone.utc).isoformat(),
+                            'entry_price_guess': entry_price,
+                            'exit_ts': 0,
+                            'exit_time': '',
+                            'exit_price_guess': 0.0,
+                            'raw_price_a': entry_price,
+                            'raw_price_b': entry_price
+                        }
+                        entries.append(entry)
+                        trade_num += 1
+                    elif sfvg:
+                        entry_price = df['close'].iloc[i]
+                        entry = {
+                            'trade_num': trade_num,
+                            'direction': 'short',

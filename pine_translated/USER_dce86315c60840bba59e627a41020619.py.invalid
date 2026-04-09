@@ -1,0 +1,4 @@
+df['datetime'] = pd.to_datetime(df['time'], unit='s', utc=True)
+    df['datetime'] = df['datetime'].dt.tz_convert('Europe/London')
+    df['hour'] = df['datetime'].dt.hour
+    df['minute'] = df['datetime'].dt.minute

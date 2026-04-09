@@ -1,0 +1,155 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    trade_style = 'Balanced'
+    entry_filter = 3
+    exit_filter = 2
+    t3_fast_length = 12
+    t3_slow_length = 25
+    t3_factor = 0.7
+    adx_length = 14
+    di_length = 14
+    adx_threshold = 25.0
+    bb_length = 20
+    bb_mult = 2.0
+    keltner_length = 20
+    keltner_mult = 1.5
+    supertrend_length = 22
+    supertrend_mult = 3.0
+
+    def calculate_t3(src, length, factor):
+        ema1 = src.ewm(span=length, adjust=False).mean()
+        ema2 = ema1.ewm(span=length, adjust=False).mean()
+        ema3 = ema2.ewm(span=length, adjust=False).mean()
+        ema4 = ema3.ewm(span=length, adjust=False).mean()
+        ema5 = ema4.ewm(span=length, adjust=False).mean()
+        ema6 = ema5.ewm(span=length, adjust=False).mean()
+        c1 = -factor ** 3
+        c2 = 3 * factor ** 2 + 3 * factor ** 3
+        c3 = -6 * factor ** 2 - 3 * factor - 3 * factor ** 3
+        c4 = 1 + 3 * factor + factor ** 3 + 3 * factor ** 2
+        return c1 * ema6 + c2 * ema5 + c3 * ema4 + c4 * ema3
+
+    def calculate_atr(df, length):
+        high = df['high']
+        low = df['low']
+        close = df['close']
+        tr1 = high - low
+        tr2 = (high - close.shift()).abs()
+        tr3 = (low - close.shift()).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.ewm(alpha=1/length, adjust=False, min_periods=length).mean()
+        return atr
+
+    t3_fast = calculate_t3(df['close'], t3_fast_length, t3_factor)
+    t3_slow = calculate_t3(df['close'], t3_slow_length, t3_factor)
+
+    up = df['high'].diff()
+    down = -df['low'].diff()
+    plus_dm = up.where((up > down) & (up > 0), 0)
+    minus_dm = down.where((down > up) & (down > 0), 0)
+    tr = calculate_atr(df, di_length)
+    plus_di = 100 * plus_dm.ewm(alpha=1/di_length, adjust=False, min_periods=di_length).mean() / tr
+    minus_di = 100 * minus_dm.ewm(alpha=1/di_length, adjust=False, min_periods=di_length).mean() / tr
+    sum_di = plus_di + minus_di
+    adx_value = 100 * (plus_di - minus_di).abs().ewm(alpha=1/adx_length, adjust=False, min_periods=adx_length).mean() / sum_di.replace(0, 1)
+
+    cross_up = (t3_fast > t3_slow) & (t3_fast.shift(1) <= t3_slow.shift(1))
+    cross_down = (t3_fast < t3_slow) & (t3_fast.shift(1) >= t3_slow.shift(1))
+    adx_confirm = adx_value > adx_threshold
+
+    bb_basis = df['close'].rolling(bb_length).mean()
+    bb_std = df['close'].rolling(bb_length).std()
+    bb_upper = bb_basis + bb_mult * bb_std
+    bb_lower = bb_basis - bb_mult * bb_std
+
+    keltner_basis = df['close'].ewm(span=keltner_length, adjust=False).mean()
+    keltner_atr = calculate_atr(df, keltner_length)
+    keltner_upper = keltner_basis + keltner_mult * keltner_atr
+    keltner_lower = keltner_basis - keltner_mult * keltner_atr
+
+    bullish_breakout = (bb_lower < keltner_lower) & (bb_lower.shift(1) >= keltner_lower.shift(1))
+    bearish_breakout = (bb_upper > keltner_upper) & (bb_upper.shift(1) <= keltner_upper.shift(1))
+
+    supertrend_atr = supertrend_mult * calculate_atr(df, supertrend_length)
+    src_price = (df['high'] + df['low']) / 2
+
+    long_stop = src_price - supertrend_atr
+    short_stop = src_price + supertrend_atr
+    long_stop_prev = long_stop.iloc[0] if not np.isnan(long_stop.iloc[0]) else src_price.iloc[0] - supertrend_atr.iloc[0]
+    short_stop_prev = short_stop.iloc[0] if not np.isnan(short_stop.iloc[0]) else src_price.iloc[0] + supertrend_atr.iloc[0]
+    prev_supertrend_dir = 1
+
+    raw_long_signal = pd.Series(False, index=df.index)
+    raw_short_signal = pd.Series(False, index=df.index)
+
+    if trade_style == 'Strict':
+        raw_long_signal = cross_up & (df['close'] > t3_slow) & bullish_breakout & adx_confirm
+        raw_short_signal = cross_down & (df['close'] < t3_slow) & bearish_breakout & adx_confirm
+    elif trade_style == 'Balanced':
+        raw_long_signal = (t3_fast > t3_slow) & (df['close'] > t3_slow) & bullish_breakout & adx_confirm
+        raw_short_signal = (t3_fast < t3_slow) & (df['close'] < t3_slow) & bearish_breakout & adx_confirm
+    elif trade_style == 'Scalper':
+        raw_long_signal = (df['close'] > t3_slow) & bullish_breakout & adx_confirm
+        raw_short_signal = (df['close'] < t3_slow) & bearish_breakout & adx_confirm
+
+    entries = []
+    trade_num = 1
+    bars_since_last_entry = 1000
+    in_long_position = False
+    in_short_position = False
+
+    for i in range(1, len(df)):
+        if pd.isna(t3_fast.iloc[i]) or pd.isna(t3_slow.iloc[i]) or pd.isna(adx_value.iloc[i]):
+            continue
+
+        bars_since_last_entry += 1
+
+        low_i = df['low'].iloc[i]
+        high_i = df['high'].iloc[i]
+        open_i = df['open'].iloc[i]
+        close_i = df['close'].iloc[i]
+        low_prev = df['low'].iloc[i-1]
+        high_prev = df['high'].iloc[i-1]
+
+        is_doji = (open_i == close_i) and (open_i == low_i) and (open_i == high_i)
+
+        if is_doji:
+            current_long_stop = long_stop_prev
+            current_short_stop = short_stop_prev
+        else:
+            current_long_stop = max(long_stop.iloc[i], long_stop_prev) if low_prev > long_stop_prev else long_stop.iloc[i]
+            current_short_stop = min(short_stop.iloc[i], short_stop_prev) if high_prev < short_stop_prev else short_stop.iloc[i]
+
+        new_dir = 1 if (prev_supertrend_dir == -1 and high_i > short_stop_prev) else (-1 if (prev_supertrend_dir == 1 and low_i < long_stop_prev) else prev_supertrend_dir)
+
+        if trade_style != 'Exits Only' and raw_long_signal.iloc[i] and bars_since_last_entry >= entry_filter and not in_long_position:
+            ts = int(df['time'].iloc[i])
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': ts,
+                'entry_time': datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                'entry_price_guess': close_i,
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': close_i,
+                'raw_price_b': close_i
+            })
+            trade_num += 1
+            bars_since_last_entry = 0
+            in_long_position = True
+            in_short_position = False
+
+        if trade_style != 'Exits Only' and raw_short_signal.iloc[i] and bars_since_last_entry >= entry_filter and not in_short_position:
+            ts = int(df['time'].iloc[i])
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': ts,
+                'entry_time': datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                'entry_price_guess': close_i,
+                'exit_ts

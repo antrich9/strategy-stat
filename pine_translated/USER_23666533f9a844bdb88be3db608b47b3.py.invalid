@@ -1,0 +1,26 @@
+is_swing_high = high == high.rolling(barsback, min_periods=1).max()
+  # But we need to make sure it's exactly the current bar, not just equal to max (which could be earlier)
+  # Actually, for valuewhen, it captures the value at the bar where the condition was true.
+  # If current bar is swing high, value = current value.
+  # If not, value = last known value (from previous swing high).
+  
+  # This is exactly what ffill does after filtering.
+  mask = is_swing_high.reindex(df.index, fill_value=False) # ensure boolean
+  
+  # Actually, the rolling max approach might mark multiple bars as True if the max persists.
+  # We need strictly the current bar to be the argmax.
+  # But in practice, for price data, if high == rolling max and it's the current bar, it's the max.
+  # If it was also the max earlier, it would have been marked then.
+  # So `high == rolling max` should be sufficient, but it might be True for consecutive bars if the high doesn't change.
+  
+  # In Pine Script, highestbars returns 0 only for the current bar if it's the max.
+  # If the max persists (e.g. high = 100 for 3 bars), then at the most recent bar (offset 0), it's true.
+  # At the previous bar (offset 1), it's also true if it's the max and there's no higher later?
+  # No, highestbars looks at the window and returns the offset to the highest.
+  # If current bar is 100, and previous was 100, then at previous bar, offset was 0 (if looking at previous+current? no, looks back).
+  
+  # Actually, if high is constant over several bars, highestbars would return 0 for all of them (most recent occurrence is 0 bars back).
+  # So we might get multiple consecutive swing highs.
+  
+  # For our purposes, this is probably fine, or we might want to suppress consecutive ones by requiring is_swing_high & ~is_swing_high.shift(1).
+  # But let's stick to the simple version first.

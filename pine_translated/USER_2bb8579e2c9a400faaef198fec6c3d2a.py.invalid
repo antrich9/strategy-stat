@@ -1,0 +1,650 @@
+The user wants me to convert only the ENTRY LOGIC from the Pine Script strategy into a Python function called `generate_entries`.
+
+Let me analyze the Pine Script to identify the entry conditions:
+
+1. The strategy uses time windows:
+   - First window: 07:00 - 10:59
+   - Second window: 15:00 - 16:59
+
+2. There are FVG (Fair Value Gap) conditions:
+   - Bullish FVG: `bfvg = low > high[2] and volfilt and atrfilt and locfiltb`
+   - Bearish FVG: `sfvg = high < low[2] and volfilt and atrfilt and locfilts`
+
+3. Where:
+   - `volfilt = inp1 ? volume[1] > ta.sma(volume, 9)*1.5 : true`
+   - `atr = ta.atr(20) / 1.5`
+   - `atrfilt = inp2 ? ((low - high[2] > atr) or (low[2] - high > atr)) : true`
+   - `loc = ta.sma(close, 54)`
+   - `loc2 = loc > loc[1]`
+   - `locfiltb = inp3 ? loc2 : true`
+   - `locfilts = inp3 ? not loc2 : true`
+
+4. The inputs inp1, inp2, inp3 are booleans, and in the code they appear to be set to `false`:
+   - `inp1 = input.bool(false, "Volume Filter", group = "Filters")`
+   - `inp2 = input.bool(false, "ATR Filter", group = "Filters")`
+   - `inp3 = input.bool(false, "Trend Filter", group = "Filters")`
+
+Since inp1, inp2, inp3 are false, the filters become:
+   - `volfilt = true` (always)
+   - `atrfilt = true` (always)
+   - `locfiltb = true` (always)
+   - `locfilts = true` (always)
+
+So the simplified entry conditions are:
+- `bfvg = low > high[2]` (bullish FVG)
+- `sfvg = high < low[2]` (bearish FVG)
+
+5. Looking at the strategy entries, I need to find `strategy.entry()` calls. The script provided is incomplete, but I can see the conditions being built. I need to find where entries are actually triggered. Based on the context, it appears the strategy is looking for FVG patterns combined with time window filtering.
+
+The script appears to be cut off, but based on the structure, I should look for entry conditions that combine the FVG logic with the time windows.
+
+Let me look at what I can reconstruct:
+
+Time windows:
+- Window 1: 07:00 - 10:59
+- Window 2: 15:00 - 16:59
+
+FVG conditions:
+- Bullish: `low > high[2]` (with filters which are essentially always true based on the inputs being false)
+- Bearish: `high < low[2]` (with filters which are essentially always true)
+
+From the variable names and structure, it seems like:
+- Long entries: `bfvg` (bullish FVG) combined with time window
+- Short entries: `sfvg` (bearish FVG) combined with time window
+
+I need to look at the structure more carefully. The script defines:
+- `obUp`, `obDown`, `fvgUp`, `fvgDown` - these are OB (Order Block) and FVG conditions
+- The trading windows `in_trading_window_1` and `in_trading_window_2`
+- Combined window `in_trading_window`
+
+But I don't see the actual `strategy.entry()` calls in the provided script. The script is cut off. However, based on the context and the FVG logic, the entries likely trigger when:
+- For long: bullish FVG (`bfvg`) occurs during trading window
+- For short: bearish FVG (`sfvg`) occurs during trading window
+
+Looking at the variables:
+- `bfvg` and `sfvg` are defined
+- `obUp`, `obDown`, `fvgUp`, `fvgDown` are defined
+- There are also `TopImbalance_Bway` and similar conditions
+
+The strategy likely has:
+- Long entry when bullish FVG and in trading window
+- Short entry when bearish FVG and in trading window
+
+Let me look at the conditions:
+- `TopImbalance_Bway = low[2] <= open[1] and high[0] >= close[1] and close[0] < low[1]`
+- `Top_ImbXBway = low[2] <= open[1] and high[0] >= close[1] and close[0] > low[1]`
+- `BottomInbalance_Bway = high[2] >= open[1] and low[0] <= close[1] and close[0] > high[1]`
+- `Bottom_ImbXBAway = high[2] >= open[1] and low[0] <= close[1] and close[0] < high[1]`
+
+But these are used for plotting boxes, not necessarily for entries.
+
+The main entry conditions appear to be `bfvg` and `sfvg` combined with the time window.
+
+Let me think about what the entry logic should be:
+
+Long entry:
+- `in_trading_window` is true
+- `bfvg` is true (which is `low > high[2]`)
+
+Short entry:
+- `in_trading_window` is true
+- `sfvg` is true (which is `high < low[2]`)
+
+The inputs inp1, inp2, inp3 are all false, so the filters don't really apply:
+- `volfilt = true` (since inp1 is false)
+- `atrfilt = true` (since inp2 is false)
+- `locfiltb = true` (since inp3 is false)
+- `locfilts = true` (since inp3 is false)
+
+So:
+- `bfvg = low > high[2] and true and true and true` = `low > high[2]`
+- `sfvg = high < low[2] and true and true and true` = `high < low[2]`
+
+For the time window logic in Pine Script:
+- `adjusted_hour = str.tonumber(str.format("{0,date,HH}", adjusted_bar_time))`
+- `adjusted_minute = str.tonumber(str.format("{0,date,mm}", adjusted_bar_time))`
+
+In Python, I need to convert the timestamp to hours and minutes.
+- `adjusted_bar_time` is `time + adjusted_timezone_offset`
+- `is_dst` is a boolean for DST
+- `adjusted_timezone_offset = 3600000 if is_dst else 0` (where 3600000 is 1 hour in milliseconds)
+
+Actually, looking at the Pine Script code:
+is_dst = (month >= 3 and (month == 3 and dayofweek == dayofweek.sunday and dayofmonth >= 25 or month > 3)) and        (month <= 10 and (month == 10 and dayofweek == dayofweek.sunday and dayofmonth < 25 or month < 10))
+adjusted_timezone_offset = is_dst ? 3600000 : base_timezone_offset
+adjusted_bar_time = bar_time_utc + adjusted_timezone_offset
+
+But the base_timezone_offset is set to 0, not 3600000 as mentioned in the comment. So `adjusted_timezone_offset = 3600000 if is_dst else 0`.
+
+In Python, I need to:
+1. Convert unix timestamp to datetime
+2. Check if it's DST (March to October, last Sunday)
+3. Add 1 hour if DST
+4. Extract hour and minute
+
+Wait, actually the logic is:
+- `bar_time_utc = time` (current bar time in milliseconds)
+- `adjusted_bar_time = bar_time_utc + adjusted_timezone_offset`
+- If DST, add 1 hour (3600000 ms)
+- If not DST, add 0
+
+So adjusted_bar_time is the local time (with DST adjustment) in milliseconds.
+
+Then:
+- `adjusted_hour = HH` (hour 00-23)
+- `adjusted_minute = mm` (minute 00-59)
+
+The time window check:
+in_trading_window_1 = (adjusted_hour >= start_hour_1 and adjusted_hour <= end_hour_1) and not (adjusted_hour == end_hour_1 and adjusted_minute > end_minute_1)
+
+Where start_hour_1=7, end_hour_1=10, end_minute_1=59.
+So window 1 is 07:00 to 10:59.
+
+in_trading_window_2 = (adjusted_hour >= start_hour_2 and adjusted_hour <= end_hour_2) and not (adjusted_hour == end_hour_2 and adjusted_minute > end_minute_2)
+
+Where start_hour_2=15, end_hour_2=16, end_minute_2=59.
+So window 2 is 15:00 to 16:59.
+
+in_trading_window = in_trading_window_1 or in_trading_window_2
+
+Now for the entries, I need to find where `strategy.entry` is called. The script provided is incomplete, but based on the structure, I can infer the entries are based on `bfvg` and `sfvg`.
+
+Actually, looking at the code more carefully, I see:
+- `bfvg = low > high[2] and volfilt and atrfilt and locfiltb`
+- `sfvg = high < low[2] and volfilt and atrfilt and locfilts`
+
+And since inp1, inp2, inp3 are all false:
+- `volfilt = true`
+- `atrfilt = true`
+- `locfiltb = true`
+- `locfilts = true`
+
+So:
+- Long entry condition: `in_trading_window and bfvg`
+- Short entry condition: `in_trading_window and sfvg`
+
+But wait, I need to check if there are other conditions like `obUp` or `obDown` combined with FVG.
+
+Looking at:
+obUp = isObUp(1)
+obDown = isObDown(1)
+fvgUp = isFvgUp(0)
+fvgDown = isFvgDown(0)
+
+Where:
+- `isObUp(index)` = `isDown(index + 1) and isUp(index) and close[index] > high[index + 1]`
+- `isObDown(index)` = `isUp(index + 1) and isDown(index) and close[index] < low[index + 1]`
+- `isFvgUp(index)` = `(low[index] > high[index + 2])`
+- `isFvgDown(index)` = `(high[index] < low[index + 2])`
+
+So:
+- `obUp` = check at index 1: isDown(2) and isUp(1) and close(1) > high(2)
+- `obDown` = check at index 1: isUp(2) and isDown(1) and close(1) < low(2)
+- `fvgUp` = check at index 0: low(0) > high(2)
+- `fvgDown` = check at index 0: high(0) < low(2)
+
+Wait, `isObUp(1)` means:
+- isDown(1+1) = isDown(2)
+- isUp(1)
+- close(1) > high(2)
+
+But in Pine Script, when you call a function with an index, it refers to that offset from current bar.
+So `isObUp(1)` checks:
+- close[1] > open[1] (isUp at index 1)
+- close[1] > high[2] (condition)
+- open[2] > close[2] (isDown at index 2)
+
+Wait, let me re-read the functions:
+isUp(index) =>
+    close[index] > open[index]
+
+isDown(index) =>
+    close[index] < open[index]
+
+isObUp(index) =>
+    isDown(index + 1) and isUp(index) and close[index] > high[index + 1]
+
+So `isObUp(1)`:
+- isDown(1+1) = isDown(2) = close[2] < open[2]
+- isUp(1) = close[1] > open[1]
+- close[1] > high[2]
+
+So it's checking if bar 1 is a bullish candle, and close[1] > high[2], and bar 2 is bearish.
+
+This is getting complicated. Let me look for the actual entry signals.
+
+The strategy title mentions "PDHL" which likely stands for "Previous Day High Low". The code has:
+- `prevDayHigh = request.security(..., 'D', high[1], ...)`
+- `prevDayLow = request.security(..., 'D', low[1], ...)`
+
+But I don't see these being used in the entry conditions in the visible part of the script.
+
+Given the script is cut off and I don't see explicit `strategy.entry()` calls, I need to make assumptions based on the common patterns in such scripts.
+
+Typically, in a PDHL strategy with FVG:
+- Long entry: when price respects PDH (Previous Day High) or PDL (Previous Day Low) with FVG confirmation during time window
+- Short entry: vice versa
+
+But looking at the variables defined:
+- `bfvg` and `sfvg` are the main FVG conditions
+- `in_trading_window` is the time filter
+
+Given the inputs inp1, inp2, inp3 are all false, the conditions simplify to just the FVG.
+
+However, the title mentions "PDHL Sweep", which might mean the entries are when price sweeps previous day high/low.
+
+But looking at the code provided, I don't see explicit PDHL sweep conditions used for entries. I see `prevDayHigh` and `prevDayLow` being calculated, but they're not visible in the provided snippet being used for entries.
+
+Given the complexity and the fact that the script is cut off, I'll focus on what I can identify:
+
+The most likely entry logic based on the code:
+1. Time window filter (07:00-10:59 and 15:00-16:59)
+2. FVG filter (bullish or bearish)
+
+So:
+- Long: `in_trading_window` and `bfvg` (where bfvg = low > high[2])
+- Short: `in_trading_window` and `sfvg` (where sfvg = high < low[2])
+
+But wait, there's also the OB (Order Block) conditions:
+- `obUp` and `obDown`
+
+These might be combined. The title says "stacked ob" which suggests combining OB with FVG.
+
+So maybe:
+- Long: `in_trading_window` and `obUp` and `fvgUp` (or similar)
+- Short: `in_trading_window` and `obDown` and `fvgDown`
+
+Let me reconsider. The script defines:
+obUp = isObUp(1)
+obDown = isObDown(1)
+fvgUp = isFvgUp(0)
+fvgDown = isFvgDown(0)
+
+And:
+// Variables to store OB and FVG conditions 
+obUp = isObUp(1)
+obDown = isObDown(1)
+fvgUp = isFvgUp(0)
+fvgDown = isFvgDown(0)
+
+And later:
+TopImbalance_Bway = low[2] <= open[1] and high[0] >= close[1] and close[0] < low[1]
+
+This looks like a specific FVG pattern called "Breakaway FVG".
+
+Given the title "1.29 Take profit new New PDHL 2R time window TN ATR 3 PDHL Sweep + stacked ob", it seems like:
+- PDHL Sweep: Previous Day High/Low sweep
+- stacked ob: stacked order block (which is what `obUp`/`obDown` might represent)
+- time window: the trading hours
+- ATR filter (though it's disabled)
+
+Since I don't see the explicit entry calls, I'll have to reconstruct based on the most common interpretation of such scripts.
+
+The most likely interpretation:
+- Long entry: `bfvg` (bullish FVG) during time window
+- Short entry: `sfvg` (bearish FVG) during time window
+
+Where:
+- `bfvg = low > high[2]`
+- `sfvg = high < low[2]`
+
+And time window is 07:00-10:59 and 15:00-16:59 in the local timezone (with DST adjustment).
+
+Actually, let me check if there are more specific conditions mentioned. The script has "Sweep" in the title. The PDHL sweep would typically be:
+- Long: price crosses above prevDayHigh (sweep)
+- Short: price crosses below prevDayLow (sweep)
+
+But I don't see explicit sweep conditions in the provided code.
+
+Given the ambiguity and the fact that the script is cut off, I'll implement the most visible and clear entry conditions:
+1. Time window filter
+2. FVG filter (bullish/bearish)
+
+This seems to be the core logic based on the variables `bfvg` and `sfvg`.
+
+Now let me write the Python code:
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    
+    # Convert time to datetime for time-based filtering
+    df['datetime'] = pd.to_datetime(df['time'], unit='ms', utc=True)
+    
+    # Extract hour and minute, accounting for DST
+    # In Pine Script, is_dst check:
+    # is_dst = (month >= 3 and (month == 3 and dayofweek == dayofweek.sunday and dayofmonth >= 25 or month > 3)) and
+    #          (month <= 10 and (month == 10 and dayofweek == dayofweek.sunday and dayofmonth < 25 or month < 10))
+    
+    # Python equivalent for DST check
+    def is_dst(dt):
+        # DST: Starts last Sunday in March at 1am UTC, ends last Sunday in October at 1am UTC
+        year = dt.year
+        # Find last Sunday of March
+        march_31 = datetime(year, 3, 31)
+        days_since_sunday = (march_31.weekday() + 1) % 7  # 0=Monday, 6=Sunday
+        last_sunday_march = 31 - days_since_sunday
+        dst_start = datetime(year, 3, last_sunday_march, 1, 0, tzinfo=timezone.utc)
+        
+        # Find last Sunday of October
+        oct_31 = datetime(year, 10, 31)
+        days_since_sunday = (oct_31.weekday() + 1) % 7
+        last_sunday_oct = 31 - days_since_sunday
+        dst_end = datetime(year, 10, last_sunday_oct, 1, 0, tzinfo=timezone.utc)
+        
+        return dst_start <= dt < dst_end
+    
+    # Adjust for DST - add 1 hour if DST
+    df['datetime_adj'] = df['datetime'].apply(lambda x: x + pd.Timedelta(hours=1) if is_dst(x) else x)
+    
+    # Extract hour and minute
+    df['hour'] = df['datetime_adj'].dt.hour
+    df['minute'] = df['datetime_adj'].dt.minute
+    
+    # Time window conditions
+    # Window 1: 07:00 - 10:59
+    window1_start = 7
+    window1_end_hour = 10
+    window1_end_minute = 59
+    
+    in_window1 = ((df['hour'] > window1_start) | 
+                  ((df['hour'] == window1_start) & (df['minute'] >= 0))) & \
+                 ((df['hour'] < window1_end_hour) | 
+                  ((df['hour'] == window1_end_hour) & (df['minute'] <= window1_end_minute)))
+    
+    # Window 2: 15:00 - 16:59
+    window2_start = 15
+    window2_end_hour = 16
+    window2_end_minute = 59
+    
+    in_window2 = ((df['hour'] > window2_start) | 
+                  ((df['hour'] == window2_start) & (df['minute'] >= 0))) & \
+                 ((df['hour'] < window2_end_hour) | 
+                  ((df['hour'] == window2_end_hour) & (df['minute'] <= window2_end_minute)))
+    
+    in_trading_window = in_window1 | in_window2
+    
+    # FVG conditions (Bullish and Bearish Fair Value Gaps)
+    # inp1, inp2, inp3 are all false, so volfilt, atrfilt, locfiltb, locfilts are all true
+    # bfvg = low > high[2]
+    # sfvg = high < low[2]
+    
+    bfvg = df['low'] > df['high'].shift(2)
+    sfvg = df['high'] < df['low'].shift(2)
+    
+    # Entry conditions
+    long_condition = in_trading_window & bfvg
+    short_condition = in_trading_window & sfvg
+    
+    # Generate entries
+    entries = []
+    trade_num = 1
+    
+    for i in range(len(df)):
+        if long_condition.iloc[i]:
+            ts = df['time'].iloc[i]
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': ts,
+                'entry_time': datetime.fromtimestamp(ts / 1000, tz=timezone.utc).isoformat(),
+                'entry_price_guess': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': df['close'].iloc[i],
+                'raw_price_b': df['close'].iloc[i]
+            })
+            trade_num += 1
+        elif short_condition.iloc[i]:
+            ts = df['time'].iloc[i]
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': ts,
+                'entry_time': datetime.fromtimestamp(ts / 1000, tz=timezone.utc).isoformat(),
+                'entry_price_guess': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': df['close'].iloc[i],
+                'raw_price_b': df['close'].iloc[i]
+            })
+            trade_num += 1
+    
+    return entries
+
+Wait, I need to be careful about the time window logic. The Pine Script says:
+in_trading_window_1 = (adjusted_hour >= start_hour_1 and adjusted_hour <= end_hour_1) and not (adjusted_hour == end_hour_1 and adjusted_minute > end_minute_1)
+
+For 07:00 - 10:59:
+- adjusted_hour >= 7 AND adjusted_hour <= 10
+- NOT (adjusted_hour == 10 AND adjusted_minute > 59)
+- Since adjusted_minute can only be 0-59, adjusted_minute > 59 is always false
+- So the second part is always false
+- So it's just: adjusted_hour >= 7 AND adjusted_hour <= 10
+
+Actually, wait. `not (adjusted_hour == end_hour_1 and adjusted_minute > end_minute_1)` 
+If adjusted_hour == 10 and adjusted_minute > 59, then true, but adjusted_minute is 0-59, so this is never true.
+So this condition is just `adjusted_hour >= 7 and adjusted_hour <= 10`.
+
+But there's a subtlety: what if the window is supposed to be 07:00:00 to 10:58:59 or something? Let me re-read:
+end_hour_1 = input.int(10, title="First Trading End Hour", minval=0, maxval=23)
+end_minute_1 = input.int(59, title="First Trading End Minute", minval=0, maxval=59)
+
+And:
+in_trading_window_1 = (adjusted_hour >= start_hour_1 and adjusted_hour <= end_hour_1) and not (adjusted_hour == end_hour_1 and adjusted_minute > end_minute_1)
+
+So it's 7:00 to 10:59 inclusive.
+
+In Python, for inclusive range:
+in_window1 = (df['hour'] > window1_start) | ((df['hour'] == window1_start) & (df['minute'] >= 0))  # This is >=
+
+Actually, for `hour >= 7`, that's `hour > 6`.
+For `hour <= 10`, that's `hour < 11` OR `(hour == 10 and minute <= 59)`.
+
+So:
+in_window1 = (df['hour'] > 7 - 1) & ((df['hour'] < 10) | ((df['hour'] == 10) & (df['minute'] <= 59)))
+
+Which is:
+in_window1 = (df['hour'] >= 7) & ((df['hour'] < 10) | ((df['hour'] == 10) & (df['minute'] <= 59)))
+
+Wait, the original condition `adjusted_hour >= start_hour_1` means hour >= 7.
+`adjusted_hour <= end_hour_1` means hour <= 10.
+But there's an extra condition: `not (adjusted_hour == end_hour_1 and adjusted_minute > end_minute_1)`.
+
+Since end_hour_1 = 10 and end_minute_1 = 59:
+- `adjusted_hour == 10 and adjusted_minute > 59` is always false (since minute max is 59)
+- So `not (false)` = true
+
+So it's simply: `hour >= 7 and hour <= 10`.
+
+But wait, what if we want to exclude the very last minute? The condition says `> 59` which is impossible. So it's inclusive of all of 10:59.
+
+So for window 1 (07:00-10:59):
+in_window1 = (df['hour'] >= 7) & (df['hour'] <= 10)
+
+For window 2 (15:00-16:59):
+in_window2 = (df['hour'] >= 15) & (df['hour'] <= 16) & (df['minute'] <= 59)
+# which simplifies to:
+in_window2 = (df['hour'] >= 15) & (df['hour'] <= 16)
+
+Actually, the condition `not (adjusted_hour == end_hour_1 and adjusted_minute > end_minute_1)` is always true when end_minute_1 = 59 because minute can never be > 59.
+
+So the time window is simply:
+- Window 1: hour >= 7 and hour <= 10
+- Window 2: hour >= 15 and hour <= 16
+
+But wait, is it possible that end_minute_1 could be set to something else? The input allows any value 0-59, so theoretically it could be 30, meaning the window would be 07:00 to 10:30.
+
+But in this specific case, it's set to 59, so it's inclusive.
+
+Let me write the condition properly:
+# Window 1: 07:00 to 10:59
+window1_start_hour = 7
+window1_end_hour = 10
+window1_end_minute = 59
+
+in_window1 = (df['hour'] > window1_start_hour) | \
+              ((df['hour'] == window1_start_hour) & (df['minute'] >= 0))
+
+in_window1_end = (df['hour'] < window1_end_hour) | \
+                 ((df['hour'] == window1_end_hour) & (df['minute'] <= window1_end_minute))
+
+in_window1 = in_window1_start & in_window1_end
+
+Actually, this is getting complicated. Let me simplify:
+in_window1 = (df['hour'] >= 7) & \
+             ((df['hour'] < 10) | ((df['hour'] == 10) & (df['minute'] <= 59)))
+
+in_window2 = (df['hour'] >= 15) & \
+             ((df['hour'] < 16) | ((df['hour'] == 16) & (df['minute'] <= 59)))
+
+in_trading_window = in_window1 | in_window2
+
+For window 1:
+- hour >= 7
+- hour < 10, OR (hour == 10 AND minute <= 59)
+
+For window 2:
+- hour >= 15
+- hour < 16, OR (hour == 16 AND minute <= 59)
+
+This looks correct.
+
+Now, about the DST calculation in Python. The Pine Script uses:
+is_dst = (month >= 3 and (month == 3 and dayofweek == dayofweek.sunday and dayofmonth >= 25 or month > 3)) and
+         (month <= 10 and (month == 10 and dayofweek == dayofweek.sunday and dayofmonth < 25 or month < 10))
+
+This checks if current date is between last Sunday of March and last Sunday of October (inclusive of start, exclusive of end?).
+
+Actually:
+- Start: Last Sunday of March at 00:00 (or 01:00?) - the script uses `adjusted_timezone_offset` added to `bar_time_utc`
+- End: Last Sunday of October at 00:00 (or 01:00?)
+
+But the logic in Pine Script is checking `month >= 3` and `month <= 10`, which covers March to October.
+
+The condition `dayofweek == dayofweek.sunday and dayofmonth >= 25` for March means if it's Sunday and day >= 25, it's DST (since DST starts at 1am UTC on the last Sunday of March).
+
+Wait, the timezone offset is added to the bar time. So if it's DST, the adjusted time is 1 hour ahead.
+
+In Python, I should convert to local time (with DST) or just adjust the hour by 1 if DST.
+
+Actually, looking at the Pine Script more carefully:
+adjusted_bar_time = bar_time_utc + adjusted_timezone_offset
+adjusted_hour = str.tonumber(str.format("{0,date,HH}", adjusted_bar_time))
+
+So if it's DST, we add 1 hour (3600000 ms) to the UTC time to get the local time (which is BST in summer, i.e., UTC+1).
+
+In Python, I need to check if the timestamp is in DST and if so, add 1 hour to the datetime before extracting the hour.
+
+def is_dst(dt):
+    # DST in UK: last Sunday of March to last Sunday of October
+    # March: last Sunday is 25-31
+    # October: last Sunday is 25-31
+    
+    year = dt.year
+    
+    # Last Sunday of March
+    march_last_sunday = datetime(year, 3, 31)
+    days_from_sunday = (march_last_sunday.weekday() + 1) % 7  # Days to subtract to get Sunday
+    # If today is Sunday, days_from_sunday = 0, so last Sunday is 31
+    # If today is Monday, days_from_sunday = 1, so last Sunday is 30
+    # etc.
+    last_sunday_march_day = 31 - days_from_sunday
+    
+    # Last Sunday of October
+    oct_last_sunday = datetime(year, 10, 31)
+    days_from_sunday = (oct_last_sunday.weekday() + 1) % 7
+    last_sunday_oct_day = 31 - days_from_sunday
+    
+    dst_start = datetime(year, 3, last_sunday_march_day, tzinfo=timezone.utc)
+    dst_end = datetime(year, 10, last_sunday_oct_day, tzinfo=timezone.utc)
+    
+    return dst_start <= dt < dst_end
+
+Wait, DST usually starts at 1am UTC, not midnight. But for the purpose of checking the hour, it doesn't matter much since we're checking dates, not times.
+
+Actually, the condition in Pine Script is:
+is_dst = (month >= 3 and (month == 3 and dayofweek == dayofweek.sunday and dayofmonth >= 25 or month > 3)) and
+         (month <= 10 and (month == 10 and dayofweek == dayofweek.sunday and dayofmonth < 25 or month < 10))
+
+This is equivalent to:
+- (month > 3) OR (month == 3 AND dayofmonth >= 25 AND dayofweek == sunday)
+- AND
+- (month < 10) OR (month == 10 AND dayofweek == sunday AND dayofmonth < 25)
+
+So it's from March 25 (if Sunday) or later in March, to October 24 (if Sunday) or earlier in October.
+
+In Python:
+from datetime import datetime, timezone
+
+def is_dst(dt):
+    year = dt.year
+    
+    # Find last Sunday of March
+    march_31 = datetime(year, 3, 31)
+    days_since_sunday = (march_31.weekday() + 1) % 7  # Monday=0, Sunday=6
+    last_sunday_march = 31 - days_since_sunday
+    
+    # Find last Sunday of October
+    oct_31 = datetime(year, 10, 31)
+    days_since_sunday = (oct_31.weekday() + 1) % 7
+    last_sunday_oct = 31 - days_since_sunday
+    
+    # DST starts at 1am on last Sunday of March
+    dst_start = datetime(year, 3, last_sunday_march, 1, 0, tzinfo=timezone.utc)
+    # DST ends at 1am on last Sunday of October
+    dst_end = datetime(year, 10, last_sunday_oct, 1, 0, tzinfo=timezone.utc)
+    
+    return dst_start <= dt < dst_end
+
+But since we're just checking the hour, and DST change happens at 1am or 2am depending on country, and our trading windows start at 7am, the exact hour of transition doesn't matter for our purposes (7am is well after the transition).
+
+So I can simplify to just checking the date range:
+def is_dst(dt):
+    year = dt.year
+    
+    # Find last Sunday of March
+    march_31 = datetime(year, 3, 31)
+    days_since_sunday = (march_31.weekday() + 1) % 7
+    last_sunday_march = 31 - days_since_sunday
+    
+    # Find last Sunday of October
+    oct_31 = datetime(year, 10, 31)
+    days_since_sunday = (oct_31.weekday() + 1) % 7
+    last_sunday_oct = 31 - days_since_sunday
+    
+    dst_start_date = datetime(year, 3, last_sunday_march).date()
+    dst_end_date = datetime(year, 10, last_sunday_oct).date()
+    
+    current_date = dt.date()
+    
+    return dst_start_date <= current_date < dst_end_date
+
+Actually, looking at the Pine Script condition again:
+is_dst = (month >= 3 and (month == 3 and dayofweek == dayofweek.sunday and dayofmonth >= 25 or month > 3)) and        (month <= 10 and (month == 10 and dayofweek == dayofweek.sunday and dayofmonth < 25 or month < 10))
+
+This is confusing. Let me parse it:
+- Part 1: `month >= 3 and (month == 3 and dayofweek == dayofweek.sunday and dayofmonth >= 25 or month > 3)`
+  - This is true if month > 3, OR (month == 3 AND it's Sunday AND day >= 25)
+  - So from March 25 (if Sunday) or April 1 onwards
+  
+- Part 2: `month <= 10 and (month == 10 and dayofweek == dayofweek.sunday and dayofmonth < 25 or month < 10)`
+  - This is true if month < 10, OR (month == 10 AND it's Sunday AND day < 25)
+  - So until October 24 (if Sunday) or September 30
+
+- Combined: From March 25 (Sunday) or April to October 24 (Sunday)

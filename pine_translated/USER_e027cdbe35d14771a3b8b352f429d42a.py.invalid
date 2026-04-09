@@ -1,0 +1,53 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    # ── Parameters (mirroring Pine Script inputs) ──────────────────────────────
+    cci_len      = 25
+    trail_len    = 20
+    upper_thresh = 50
+    lower_thresh = -50
+
+    rf_type      = "Type 1"
+    rf_mov_src   = "Close"
+    rf_qty       = 2.618
+    rf_scale     = "Average Change"
+    rf_per       = 14
+    rf_smooth    = True
+    rf_smooth_per = 27
+
+    useTDFI       = True
+    crossTDFI     = True
+    inverseTDFI  = False
+    lookbackTDFI = 13
+    mmaLengthTDFI = 13
+    mmaModeTDFI  = "ema"
+    smmaLengthTDFI = 13
+    smmaModeTDFI = "ema"
+    nLengthTDFI  = 3
+    filterHighTDFI = 0.05
+    filterLowTDFI  = -0.05
+
+    adx_len      = 14
+    adx_ma_len   = 14
+    adx_threshold = 0.0
+
+    # ── Prepare series ──────────────────────────────────────────────────────────
+    high   = df['high']
+    low    = df['low']
+    close  = df['close']
+
+    # ── 1. Commodity Trend Reactor (CTR) ──────────────────────────────────────
+    # CCI
+    cci_mean = close.rolling(cci_len).mean()
+    cci_std  = close.rolling(cci_len).std()
+    cci = (close - cci_mean) / (0.015 * cci_std)
+
+    # Lowest / Highest over trail_len
+    low_  = low.rolling(trail_len).min()
+    high_ = high.rolling(trail_len).max()
+
+    # CTR trend (boolean latch)
+    crossover_upper = (cci > upper_thresh) & (cci.shift(1) <= upper_thresh)
+    crossunder_lower = (

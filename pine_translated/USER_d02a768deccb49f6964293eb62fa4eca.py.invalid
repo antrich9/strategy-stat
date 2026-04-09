@@ -1,0 +1,8 @@
+df['date'] = pd.to_datetime(df['time'], unit='s', utc=True).dt.date
+   daily = df.groupby('date').agg(prevDayHigh=('high','max'), prevDayLow=('low','min')).reset_index()
+   daily['date'] = pd.to_datetime(daily['date'])
+   daily['prevDate'] = daily['date'] - pd.Timedelta(days=1)
+   daily = daily.rename(columns={'prevDayHigh':'prevDayHigh', 'prevDayLow':'prevDayLow'})
+   # now merge on date
+   df = df.merge(daily[['prevDate','prevDayHigh','prevDayLow']], left_on='date', right_on='prevDate', how='left')
+   df.drop(columns=['date','prevDate'], inplace=True)

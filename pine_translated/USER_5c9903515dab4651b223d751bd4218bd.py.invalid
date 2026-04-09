@@ -1,0 +1,166 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    # -------------------------------------------------
+    # Indicator parameters (match Pine Script inputs)
+    # -------------------------------------------------
+    length_hull_ma = 9
+    use_hull_ma = True
+    use_color_hull_ma = True
+
+    length_t3 = 5
+    factor_t3 = 0.7
+    use_t3 = True
+    cross_t3 = True
+    inverse_t3 = False
+    highlight_movements_t3 = True
+
+    stc_length = 10
+    fast_length = 23
+    slow_length = 50
+    stc_factor = 0.5
+    stc_threshold = 25
+
+    # -------------------------------------------------
+    # Helper: Weighted Moving Average (WMA)
+    # -------------------------------------------------
+    def wma(series: pd.Series, window: int) -> pd.Series:
+        if window <= 0:
+            return series * np.nan
+        weights = np.arange(1, window + 1, dtype=float)
+        def weighted_mean(x):
+            return np.dot(x, weights) / weights.sum()
+        return series.rolling(window=window).apply(weighted_mean, raw=True)
+
+    # -------------------------------------------------
+    # Helper: Triple EMA (T3) indicator
+    # -------------------------------------------------
+    def t3_indicator(series: pd.Series, length: int, factor: float) -> pd.Series:
+        ema1 = series.ewm(span=length, adjust=False).mean()
+        ema2 = ema1.ewm(span=length, adjust=False).mean()
+        gd = ema1 * (1 + factor) - ema2 * factor
+
+        ema1_2 = gd.ewm(span=length, adjust=False).mean()
+        ema2_2 = ema1_2.ewm(span=length, adjust=False).mean()
+        gd2 = ema1_2 * (1 + factor) - ema2_2 * factor
+
+        ema1_3 = gd2.ewm(span=length, adjust=False).mean()
+        ema2_3 = ema1_3.ewm(span=length, adjust=False).mean()
+        gd3 = ema1_3 * (1 + factor) - ema2_3 * factor
+        return gd3
+
+    # -------------------------------------------------
+    # Prices
+    # -------------------------------------------------
+    close = df['close'].copy()
+    time_col = df['time'].copy()
+
+    # -------------------------------------------------
+    # 1. Hull MA
+    # -------------------------------------------------
+    half_len_hull = length_hull_ma // 2                     # floor(9/2) = 4
+    wma_half = wma(close, half_len_hull)
+    wma_full = wma(close, length_hull_ma)
+    intermediate_hull = 2.0 * wma_half - wma_full
+    hull_ma = wma(intermediate_hull, int(np.sqrt(length_hull_ma)))   # sqrt(9)=3
+
+    hull_ma_prev = hull_ma.shift(1)
+    hull_ma_rising = (hull_ma > hull_ma_prev).fillna(False).astype(bool)
+    close_above_hull = (close > hull_ma).fillna(False).astype(bool)
+
+    signal_hull_long = hull_ma_rising & close_above_hull   # only when useHullMA and usecolorHullMA
+
+    # -------------------------------------------------
+    # 2. T3
+    # -------------------------------------------------
+    t3 = t3_indicator(close, length_t3, factor_t3)
+
+    t3_prev = t3.shift(1)
+    t3_rising = (t3 > t3_prev).fillna(False).astype(bool)
+
+    # basic long condition = t3 rising and close > t3
+    basic_long_cond = (t3_rising & (close > t3)).fillna(False).astype(bool)
+
+    # t3SignalsLong = basicLongCondition (highlightMovementsT3 == true)
+    t3_signals_long = basic_long_cond.copy()
+
+    # t3SignalsLongCross = not t3SignalsLong[1] and t3SignalsLong
+    t3_signals_long_prev = t3_signals_long.shift(1).fillna(False).astype(bool)
+    t3_signals_long_cross = (~t3_signals_long_prev & t3_signals_long).fillna(False).astype(bool)
+
+    # t3SignalsLongFinal = inverseT3 ? not t3SignalsLongCross : t3SignalsLongCross
+    if inverse_t3:
+        t3_signals_long_final = (~t3_signals_long_cross).fillna(False).astype(bool)
+    else:
+        t3_signals_long_final = t3_signals_long_cross.copy()
+
+    # -------------------------------------------------
+    # 3. Schaff Trend Cycle (STC)
+    # -------------------------------------------------
+    fast_ema = close.ewm(span=fast_length, adjust=False).mean()
+    slow_ema = close.ewm(span=slow_length, adjust=False).mean()
+    macd = fast_ema - slow_ema
+
+    # Stochastic of macd
+    roll_min = macd.rolling(window=stc_length).min()
+    roll_max = macd.rolling(window=stc_length).max()
+    denom = roll_max - roll_min
+    k_raw = pd.Series(
+        np.where(denom != 0, (macd - roll_min) / denom * 100, 0.0),
+        index=close.index
+    )
+    k = k_raw.ffill()   # fixnan
+
+    # EMA of k (length 3)
+    d = k.ewm(span=3, adjust=False).mean()
+
+    kd = k - d
+    numerator = kd.abs()
+
+    # highest of numerator over stc_length
+    denom2 = numerator.rolling(window=stc_length).max()
+    fract_raw = pd.Series(
+        np.where(denom2 != 0, numerator / denom2 * 100, np.nan),
+        index=close.index
+    )
+    fract = fract_raw.ffill()   # fixnan for zero denom
+
+    # v2 = v2[1] + factor * (fract - v2[1])  with v2[0] = 0
+    v2 = pd.Series(np.zeros(len(fract)), index=fract.index)
+    for i in range(1, len(fract)):
+        v2.iloc[i] = v2.iloc[i - 1] + stc_factor * (fract.iloc[i] - v2.iloc[i - 1])
+
+    stc_value = 100.0 * v2
+
+    # -------------------------------------------------
+    # 4. Combined entry condition
+    # -------------------------------------------------
+    long_condition = (
+        signal_hull_long &
+        t3_signals_long_final &
+        (stc_value > stc_threshold)
+    ).fillna(False).astype(bool)
+
+    # -------------------------------------------------
+    # 5. Generate entry list
+    # -------------------------------------------------
+    entries = []
+    trade_num = 1
+
+    for i in range(len(df)):
+        if long_condition.iloc[i]:
+            ts = int(time_col.iloc[i])
+            entry_price = float(close.iloc[i])
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': ts,
+                'entry_time': datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                'entry_price_guess': entry_price,
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': entry_price,
+                'raw

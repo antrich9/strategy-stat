@@ -1,0 +1,94 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    required_cols = ['time', 'open', 'high', 'low', 'close', 'volume']
+    if not all(col in df.columns for col in required_cols):
+        return []
+    
+    df = df.copy().sort_values('time').reset_index(drop=True)
+    
+    # Resample to 4H
+    close_4h = df.set_index('time')['close'].resample('240T').last()
+    high_4h = df.set_index('time')['high'].resample('240T').max()
+    low_4h = df.set_index('time')['low'].resample('240T').min()
+    open_4h = df.set_index('time')['open'].resample('240T').first()
+    volume_4h = df.set_index('time')['volume'].resample('240T').sum()
+    
+    # Drop NaN rows
+    valid_mask = close_4h.notna() & high_4h.notna() & low_4h.notna() & open_4h.notna() & volume_4h.notna()
+    close_4h = close_4h[valid_mask]
+    high_4h = high_4h[valid_mask]
+    low_4h = low_4h[valid_mask]
+    open_4h = open_4h[valid_mask]
+    volume_4h = volume_4h[valid_mask]
+    
+    # ATR (Wilder) on 4H
+    tr1 = high_4h - low_4h
+    tr2 = (high_4h - close_4h.shift(1)).abs()
+    tr3 = (low_4h - close_4h.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr_4h = tr.ewm(alpha=1/14, adjust=False).mean()
+    
+    # Shifted values for FVG (2 bars back means shift(2) in 4H)
+    high_4h_2 = high_4h.shift(2)
+    low_4h_2 = low_4h.shift(2)
+    
+    # Volume filter
+    vol_4h_prev = volume_4h.shift(1)
+    vol_sma = volume_4h.rolling(9).mean()
+    volfilt1 = vol_4h_prev > vol_sma * 1.5
+    
+    # ATR filter
+    atrfilt1 = (low_4h - high_4h_2 > atr_4h/1.5) | (low_4h_2 - high_4h > atr_4h/1.5)
+    
+    # Trend filter (EMA on 4H close)
+    loc = close_4h.ewm(span=54, adjust=False).mean()
+    loc2 = (notna(loc)) & (loc > loc.shift(1))
+    locfiltb1 = loc2
+    locfilts1 = ~loc2 | ~notna(loc)
+    
+    # Bullish/Bearish FVG on 4H
+    bfvg1 = (low_4h > high_4h_2) & volfilt1 & atrfilt1 & locfiltb1
+    sfvg1 = (high_4h < low_4h_2) & volfilt1 & atrfilt1 & locfilts1
+    
+    # London window check (hour in UTC)
+    def in_london_window(ts):
+        try:
+            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+            h = dt.hour
+            m = dt.minute
+            minutes = h * 60 + m
+            window1 = (minutes >= 465) and (minutes < 705)
+            window2 = (minutes >= 840) and (minutes < 885)
+            return window1 or window2
+        except:
+            return False
+    
+    # Sharp turn detection & entry generation
+    entries = []
+    trade_num = 1
+    lastFVG = 0
+    
+    for i in range(len(close_4h)):
+        if any(x != x for x in [bfvg1.iloc[i], sfvg1.iloc[i], loc2.iloc[i] if i < len(loc2) else False]):
+            continue
+        
+        ts = close_4h.index[i]
+        if not in_london_window(ts):
+            continue
+        
+        is_new_4h = (i == 0) or (ts != close_4h.index[i-1] + pd.Timedelta('240T'))
+        if not is_new_4h:
+            continue
+        
+        b = bool(bfvg1.iloc[i])
+        s = bool(sfvg1.iloc[i])
+        
+        if b and lastFVG == -1:
+            entry_price = float(close_4h.iloc[i])
+            entry_ts = int(ts.timestamp())
+            entry_time = datetime.fromtimestamp(entry_ts, tz=timezone.utc).isoformat()
+            entries.append({
+                'trade_num': trade_num, 'direction': 'long',

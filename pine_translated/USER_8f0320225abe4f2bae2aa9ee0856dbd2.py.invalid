@@ -1,0 +1,7 @@
+def pivothigh(high, left, right):
+    # left and right are ints
+    # ensure high is a pd.Series
+    # Create windows:
+    left_max = high.rolling(window=left, min_periods=left).max()
+    right_max = high.shift(-right).rolling(window=right, min_periods=right).max() # but shift needed
+    # Actually we can compute the max over the next `right` bars using shift.

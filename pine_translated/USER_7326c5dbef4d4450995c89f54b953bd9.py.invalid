@@ -1,0 +1,20 @@
+def detect_pivot_highs_lows(df, pivotPeriod):
+    highs = df['high'].values
+    lows = df['low'].values
+    n = len(df)
+    
+    pivot_highs = np.full(n, np.nan)
+    pivot_lows = np.full(n, np.full(n, np.nan))
+    
+    for i in range(pivotPeriod, n):
+        # Check pivot high
+        window_highs = highs[i-pivotPeriod:i+1]
+        if highs[i] == np.max(window_highs):
+            pivot_highs[i] = highs[i]
+        
+        # Check pivot low
+        window_lows = lows[i-pivotPeriod:i+1]
+        if lows[i] == np.min(window_lows):
+            pivot_lows[i] = lows[i]
+    
+    return pivot_highs, pivot_lows

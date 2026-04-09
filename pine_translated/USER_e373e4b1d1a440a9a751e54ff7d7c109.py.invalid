@@ -1,0 +1,141 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    # Ensure we have required columns
+    required_cols = ['time', 'open', 'high', 'low', 'close', 'volume']
+    for col in required_cols:
+        if col not in df.columns:
+            raise ValueError(f"Missing required column: {col}")
+    
+    # Create a copy to avoid modifying original
+    data = df.copy()
+    
+    # Sort by time to ensure chronological order
+    data = data.sort_values('time').reset_index(drop=True)
+    
+    # Helper function to calculate Wilder RSI
+    def wilder_rsi(series, period):
+        delta = series.diff()
+        gain = delta.where(delta > 0, 0.0)
+        loss = (-delta).where(delta < 0, 0.0)
+        
+        avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
+        
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
+    
+    # Helper function to calculate Wilder ATR
+    def wilder_atr(high, low, close, period):
+        tr1 = high - low
+        tr2 = abs(high - close.shift(1))
+        tr3 = abs(low - close.shift(1))
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        
+        atr = tr.ewm(alpha=1/period, adjust=False).mean()
+        return atr
+    
+    # Create 4H aggregated data
+    data['time_4h'] = pd.to_datetime(data['time'], unit='s', utc=True).dt.floor('4h')
+    
+    # For 4H aggregation, we need to resample
+    # Get the last values for each 4H period
+    data_4h = data.groupby('time_4h').agg({
+        'high': 'max',
+        'low': 'min',
+        'close': 'last',
+        'volume': 'sum'
+    }).reset_index()
+    
+    # Also get the open (first value of each period)
+    data_4h_open = data.groupby('time_4h')['open'].first().reset_index()
+    data_4h = data_4h.merge(data_4h_open, on='time_4h')
+    
+    # Sort 4H data
+    data_4h = data_4h.sort_values('time_4h').reset_index(drop=True)
+    
+    # Convert time_4h to unix timestamp for 4H data
+    data_4h['time'] = data_4h['time_4h'].astype('int64') // 10**9
+    
+    # Calculate 4H indicators
+    high_4h = data_4h['high']
+    low_4h = data_4h['low']
+    close_4h = data_4h['close']
+    volume_4h = data_4h['volume']
+    
+    # 4H SMA for volume filter
+    volume_sma_4h = volume_4h.rolling(window=9).mean()
+    volfilt1 = volume_4h.shift(1) > volume_sma_4h.shift(1) * 1.5
+    
+    # 4H ATR
+    atr_4h = wilder_atr(high_4h, low_4h, close_4h, 20)
+    atr_4h_filter = atr_4h / 1.5
+    atrfilt1 = ((low_4h - high_4h.shift(2) > atr_4h_filter) | (low_4h.shift(2) - high_4h > atr_4h_filter))
+    
+    # 4H Trend filter
+    loc1 = close_4h.rolling(window=54).mean()
+    locfiltb1 = loc1 > loc1.shift(1)
+    locfilts1 = loc1 <= loc1.shift(1)
+    
+    # 4H FVG detection
+    bfvg1 = (low_4h > high_4h.shift(2)) & volfilt1 & atrfilt1 & locfiltb1
+    sfvg1 = (high_4h < low_4h.shift(2)) & volfilt1 & atrfilt1 & locfilts1
+    
+    # Chart timeframe indicators
+    high_1h = data['high']
+    low_1h = data['low']
+    close_1h = data['close']
+    volume_1h = data['volume']
+    
+    # 1H SMA for volume filter
+    volume_sma_1h = volume_1h.rolling(window=9).mean()
+    volfilt = volume_1h.shift(1) > volume_sma_1h.shift(1) * 1.5
+    
+    # 1H ATR
+    atr_1h = wilder_atr(high_1h, low_1h, close_1h, 20)
+    atr_1h_filter = atr_1h / 1.5
+    atrfilt = ((low_1h - high_1h.shift(2) > atr_1h_filter) | (low_1h.shift(2) - high_1h > atr_1h_filter))
+    
+    # 1H Trend filter
+    loc_1h = close_1h.rolling(window=54).mean()
+    locfiltb = loc_1h > loc_1h.shift(1)
+    locfilts = loc_1h <= loc_1h.shift(1)
+    
+    # 1H FVG detection
+    bfvg = (low_1h > high_1h.shift(2)) & volfilt & atrfilt & locfiltb
+    sfvg = (high_1h < low_1h.shift(2)) & volfilt & atrfilt & locfilts
+    
+    # Merge 1H and 4H indicators
+    data['bfvg_4h'] = bfvg1.reindex(data.index, method='ffill')
+    data['sfvg_4h'] = sfvg1.reindex(data.index, method='ffill')
+    data['bfvg'] = bfvg
+    data['sfvg'] = sfvg
+    
+    # Generate entries
+    entries = []
+    for i in range(len(data)):
+        if data['bfvg'].iloc[i] and data['bfvg_4h'].iloc[i]:
+            entries.append({
+                'time': data['time'].iloc[i],
+                'type': 'long',
+                'price': data['close'].iloc[i]
+            })
+        elif data['sfvg'].iloc[i] and data['sfvg_4h'].iloc[i]:
+            entries.append({
+                'time': data['time'].iloc[i],
+                'type': 'short',
+                'price': data['close'].iloc[i]
+            })
+    
+    return entries
+
+I need to aggregate the data into 4H candles by extracting the maximum high, minimum low, last close, and sum of volume for each 4H period, while capturing the first open price. Then I'll calculate technical indicators across both timeframes to identify fair value gaps and generate trading signals based on the confluence between 1H and 4H FVG patterns.
+
+After computing the 4H indicators including a 54-period SMA for trend filtering and the FVG conditions with volume, ATR, and trend confirmations, I'll map these 4H values back to the original 15-minute bars to align the signals across timeframes.
+
+For the London trading windows, I need to convert timestamps to London local time (accounting for BST from late March through late October) and filter entries to only those occurring between 07:00-11:45 and 14:00-14:45 London time.
+
+Since the Pine Script uses `timestamp("Europe/London", ...)` which handles timezone conversion automatically, I'll need to convert the Unix timestamps in the data to London time and check if they fall within those windows. The implementation requires parsing the timestamps, handling DST transitions, and filtering the generated entries accordingly. I need to convert the timestamp to London time and check if it falls within the trading windows. For BST, I can determine the timezone offset by checking if the date falls between March's last Sunday and October's last Sunday.

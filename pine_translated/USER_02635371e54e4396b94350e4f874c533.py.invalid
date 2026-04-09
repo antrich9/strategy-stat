@@ -1,0 +1,4 @@
+if close < fib_50
+        strategy.entry("Long", ...)
+    else if close > fib_50
+        strategy.entry("Short", ...)

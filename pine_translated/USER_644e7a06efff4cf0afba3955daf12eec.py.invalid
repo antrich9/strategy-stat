@@ -1,0 +1,567 @@
+The user wants me to convert the ENTRY LOGIC ONLY from a complex Pine Script strategy into a Python function called `generate_entries`.
+
+Let me analyze the Pine Script to identify the entry logic:
+
+1. The strategy uses a "Market Maker Model" approach with:
+   - HTF PD Array (Higher TimeFrame PD Array) detection
+   - FVG (Fair Value Gap) detection
+   - MSS (Market Structure Shift) detection
+   
+2. Looking at the imports and the structure:
+   - Uses `request.security` for ATR
+   - Has pivot high/low detection for swing highs/lows
+   - Has MSS (Market Structure Shift) detection
+
+3. The entry logic seems to be embedded in the functions and the overall strategy. Let me look for `strategy.entry` calls:
+
+Looking at the Pine Script provided, I don't see explicit `strategy.entry()` calls in the visible portion. The code shows:
+- `HTF_Detector` function for detecting high time frame levels
+- `Drawing_PD` function for drawing
+- `MSSLevelDetector` function for MSS detection (starts but is cut off)
+
+Since the Pine Script is cut off, I need to infer the entry logic based on:
+1. The overall strategy name and description mentions "MMXM ICT [TradingFinder] Market Maker Model PO3 CHoCH/CSID + FVG"
+2. It uses concepts like:
+   - FVG (Fair Value Gap) filters
+   - MSS (Market Structure Shift) validity periods (150 bars)
+   - PD Array (Price Discovery Array) with swing period of 50
+   - ATR coefficient for threshold
+
+The strategy likely has entries when:
+- MSS (Market Structure Shift) occurs (bullish or bearish)
+- With potential FVG filter conditions
+
+However, since the Pine Script code is incomplete (cut off), I need to make reasonable assumptions based on the visible logic:
+
+
+- Bullish entries trigger on MSS_L (Market Structure Shift Low)
+- Bearish entries trigger on MSS_H (MSS High), with FVG validation potentially applied based on the `PFVGFilter` boolean toggle
+
+I'll construct the Python function focusing on detecting these market structure shifts and fair value gap conditions as the core entry signals. MSSL = MSSLevelDetector(...) which returns [MSS_H, MSS_L]
+
+I need to implement the entire logic in Python including:
+1. Pivot high/low calculation
+2. HTF detection logic
+3. FVG detection logic  
+4. MSS detection logic
+
+Let me write the Python code:
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time':
+
+I need to complete the docstring and then implement the function body with pivot calculations, HTF detection, FVG identification, and MSS detection logic.
+
+The function signature shows it should return a list of trade dictionaries with trade number, direction (long/short), entry and exit timestamps and prices, plus raw price values. I'll work through the implementation starting with extracting the data and calculating the necessary indicators.
+
+I should compute ATR using the Wilder method: first find the true range across each bar (comparing current high minus low, current high versus previous close, and current low versus previous close), then calculate a smoothed moving average starting with a simple 14-period average before applying the smoothing factor over subsequent bars.
+
+For pivot high detection, I'll identify local highs at each index by comparing the surrounding bars—checking that the current high exceeds all bars within a specified lookback window on both sides, which gives me the swing points needed for the pattern logic.
+
+Pivot low detection works similarly but inverted, requiring the current low to be lower than or equal to all values within the window. This creates the complementary swing low points.
+
+For the HTF detector, I'm setting up arrays to track major swing highs and lows with their corresponding indices and permission flags to manage which pivots remain active in the calculation. H_P.get(MSH_P.size() - i) + (ATR * ATR_Coefficient) < close) and (AOI_MSH.get(AOI_MSH.size() - i) == Z))
+                AOI_MSH.set(AOI_MSH.size() - i, bar_index)
+
+        # For lows
+        for i in range(1, LSwingBack + 1):
+            if MSL_Permit.get(MSL_P.size() - i):
+                if bar_index <= AOI_MSL.get(AOI_MSL.size() - i):
+                    if MSL_P.get(MSL_P.size() - i) + (ATR * ATR_Coefficient) > low and MSL_P.get(MSL_P.size() - i) - (ATR * ATR_Coefficient) < close and (AOI_MSL.get(AOI_MSL.size() - i) == Z):
+                        MSL_Permit.set(MSL_P.size() - i, False)
+                        L_Index = MSL_I.get(MSL_P.size() - i)
+                        L_Price = MSL_P.get(MSL_P.size() - i)
+                        LAlert = True
+
+I'm checking each recent swing low to see if it's been breached by the current close. When the price closes above a prior low plus the ATR buffer, I mark that level as invalidated and trigger a low alert.
+
+The script then identifies FVG (Fair Value Gap) zones by detecting when the middle candle's range doesn't overlap with the candles immediately before and after it—specifically when the prior low exceeds the current high or the prior high falls below the current low.
+
+Next, I need to handle the MSS (Market Structure Shift) detection logic, which starts by checking if a pivot high has formed with a depth of 2 and lookback of 1, then proceeds to evaluate bullish conditions for the MSS Level Detector.
+
+The detector function manages multiple state variables tracking potential swing points and FVG (Fair Value Gap) zones. It maintains arrays for bull and bear FVG detection, storing the indices, directional levels, and proximal/distal prices for each detected gap. The function also tracks whether alerts have been triggered and manages permit flags to control when new levels can be set or reset. = False
+        MSS_L_Triggered = False
+        
+        # Check conditions
+        if CondHigh and Permit_HSet:
+            Permit_HSet = False
+            H_P = high[BarIndex]
+            H_I = BarIndex
+        
+        if CondLow and Permit_LSet:
+            Permit_LSet = False
+            L_P = low[BarIndex]
+            L_I = BarIndex
+        
+        if not HAlert:
+            Permit_HSet = True
+        if not LAlert:
+            Permit_LSet = True
+        
+        if HAlert:
+            # Check for Bearish MSS
+            if H_P + (ATR * ATR_Coefficient) < close and Bear_Trigger:
+                Bear_MSS_H = True
+                Bear_Trigger = False
+        
+        if LAlert:
+            # Check for Bullish MSS
+            if L_P - (ATR * ATR_Coefficient) > close and Bull_Trigger:
+                Bull_MSS_L = True
+                Bull_Trigger = False
+        
+        return [Bull_MSS_L, Bear_MSS_H, L_P, H_P, L_I, H_I]
+    
+    return []
+
+I'm realizing this approach is getting too complicated. Let me strip this down to just the core logic that matters for the entries. I should focus on detecting MSS signals—checking when the price crosses the array boundaries and triggers the entry conditions. The key is keeping the implementation clean and focused on what actually drives the trading decisions.
+
+Looking back at the Pine Script, I notice the main detector function HTF_Detector returns six values, and then MSSLevelDetector takes those as inputs along with the FVG parameters. The structure suggests I need to capture the detection logic first, then apply the filtering conditions before executing entries.
+
+The strategy appears to use three distinct entry mechanisms: MSS detection which tracks market structure shifts, FVG filtering that checks for fair value gaps on up/down bars, and array management to maintain the high and low values. I'll need to implement these as separate helper functions that can be called sequentially to determine when a valid entry condition occurs. # Initialize variables
+    MSS_L_Triggered = False
+    MSS_H_Triggered = False
+    Bear_Trigger = False
+    Bull_Trigger = False
+    
+    # Check high condition
+    if CondHigh and Permit_HSet:
+        Permit_HSet = False
+        H_P = high[BarIndex]
+        H_I = BarIndex
+        
+    # Check low condition  
+    if CondLow and Permit_LSet:
+        Permit_LSet = False
+        L_P = low[BarIndex]
+        L_I = BarIndex
+        
+    # Reset permits if no alert
+    if not HAlert:
+        Permit_HSet = True
+    if not LAlert:
+        Permit_LSet = True
+        
+    # Trigger MSS on close condition
+    if HAlert and H_P + (ATR * ATR_Coefficient) < close and Bear_Trigger:
+        MSS_H_Triggered = True
+        Bear_Trigger = False
+        
+    if LAlert and L_P - (ATR * ATR_Coefficient) > close and Bull_Trigger:
+        MSS_L_Triggered = True
+        Bull_Trigger = False
+        
+    return [MSS_L_Triggered, MSS_H_Triggered, L_P, H_P, L_I, H_I]
+
+The logic checks if the price closes beyond the ATR bands from detected levels, then triggers the MSS signal accordingly. Long entries fire on bullish MSS detection, while short entries trigger on bearish conditions. to implement in Python since it's a complex stateful function.
+
+However, for the Python conversion, I need to think about this differently. Pine Script runs on every bar with persistent state, while Python needs to handle this as a batch process.
+
+Let me simplify by just focusing on detecting the key entry conditions based on the logic:
+
+1. FVG detection - detect fair value gaps
+2. MSS detection - detect market structure shifts based on array levels being broken
+3. Entry when MSS condition is met
+
+For Python, I'll implement a simplified version that captures the essence:
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    # Extract parameters
+    SwingPeriod = 50
+    ATR_Coefficient = 1.0
+    FVG_Length = 150
+    MSS_Length = 150
+    
+    # Get data
+    high = df['high'].values
+    low = df['low'].values
+    close = df['close'].values
+    open_prices = df['open'].values
+    time = df['time'].values
+    
+    n = len(df)
+    
+    # Calculate ATR using Wilder's method
+    tr = np.maximum(high - low, np.maximum(
+        np.abs(high - np.roll(close, 1)),
+        np.abs(low - np.roll(close, 1))
+    ))
+    tr[0] = high[0] - low[0]
+    
+    atr = np.zeros(n)
+    atr[SwingPeriod-1] = np.mean(tr[:SwingPeriod])
+    for i in range(SwingPeriod, n):
+        atr[i] = (atr[i-1] * (SwingPeriod - 1) + tr[i]) / SwingPeriod
+    
+    # Calculate pivot highs and lows
+    pivot_high = np.zeros(n)
+    pivot_low = np.zeros(n)
+    pivot_high_idx = np.zeros(n, dtype=int)
+    pivot_low_idx = np.zeros(n, dtype=int)
+    
+    for i in range(SwingPeriod, n - SwingPeriod):
+        if np.all(high[i] >= high[i-SwingPeriod:i]):
+            pivot_high[i] = high[i]
+            pivot_high_idx[i] = i
+        if np.all(low[i] <= low[i-SwingPeriod:i]):
+            pivot_low[i] = low[i]
+            pivot_low_idx[i] = i
+    
+    # Identify arrays and track their state
+    H_P = np.nan
+    H_I = 0
+    L_P = np.nan
+    L_I = 0
+    Permit_H = True
+    Permit_L = True
+    H_Break = np.zeros(n, dtype=bool)
+    L_Break = np.zeros(n, dtype=bool)
+    
+    MSS_L = np.zeros(n, dtype=bool)
+    MSS_H = np.zeros(n, dtype=bool)
+    
+    # FVG detection
+    FVG_Bull = np.zeros(n, dtype=bool)
+    FVG_Bear = np.zeros(n, dtype=bool)
+    
+    for i in range(2, n):
+        # Check for bullish FVG: prior low > current high
+        if low[i-1] > high[i]:
+            FVG_Bull[i] = True
+        
+        # Check for bearish FVG: prior high < current low
+        if high[i-1] < low[i]:
+            FVG_Bear[i] = True
+
+I'm tracking array levels and detecting market structure shifts. When a high array breaks above its threshold plus buffer, I mark it as broken. Similarly, when a low array breaks below its threshold minus buffer, that's flagged. These breaks feed into the MSS signals, which identify momentum shifts based on whether highs or lows are being overtaken.
+
+For entries, I check if MSS conditions align with FVG filters—bulls need upward momentum, bears need downward. When both conditions trigger, I open positions and track them with timestamps and entry prices. The output includes trade metadata like direction, timing, and price levels for both entry and exit points. df['close'].iloc[i] unless strategy uses specific price
+    entry_price_guess = close[i]
+    
+    # Check for FVG filter (simplified)
+    # In the actual strategy, FVG filter would be more complex
+    fvg_filter_pass = True
+    
+    # Check if we should enter
+    # For long: Bull MSS and (no filter or FVG filter passes)
+    # For short: Bear MSS and (no filter or FVG filter passes)
+    
+    if Bull_MSS[i] and fvg_filter_pass:
+        # Long entry logic
+        # Only enter if not already in a position or based on position sizing rules
+        pass
+    
+    if Bear_MSS[i] and fvg_filter_pass:
+        # Short entry logic
+        pass
+
+For entries, I use the closing price as the entry price. The FVG filter is a simplified check that passes by default. Long entries trigger on bullish MSS with the filter passing, while short entries follow the same pattern for bearish conditions. Both check whether a position is already open before proceeding. I need to work through the logic more carefully to avoid duplicating entries when multiple conditions align. Let me restructure the detection logic so that each pivot point only triggers one MSS event.
+
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    # Parameters
+    SwingPeriod = 50
+    ATR_Coefficient = 1.0
+    FVG_Length = 150
+    MSS_Length = 150
+    
+    high = df['high'].values
+    low = df['low'].values
+    close = df['close'].values
+    open_arr = df['open'].values
+    timestamps = df['time'].values
+    n = len(df)
+    
+    # ATR calculation
+    tr = np.zeros(n)
+    tr[0] = high[0] - low[0]
+    for i in range(1, n):
+        tr[i] = max(high[i] - low[i], max(abs(high[i] - close[i-1]), abs(low[i] - close[i-1])))
+    
+    atr = np.zeros(n)
+    if n >= SwingPeriod:
+        atr[SwingPeriod-1] = np.mean(tr[:SwingPeriod])
+        for i in range(SwingPeriod, n):
+            atr[i] = (atr[i-1] * (SwingPeriod - 1) + tr[i]) / SwingPeriod
+    
+    # Pivot detection
+    pivot_high = np.zeros(n)
+    pivot_low = np.zeros(n)
+    
+    for i in range(SwingPeriod, n - SwingPeriod):
+        if all(high[i] >= high[i-SwingPeriod:i+1]):
+            pivot_high[i] = high[i]
+        if all(low[i] <= low[i-SwingPeriod:i+1]):
+            pivot_low[i] = low[i]
+    
+    # HTF
+
+I'm computing the True Range using the standard method, then smoothing it with a Wilder average to get the ATR. For pivot points, I'm checking that each high exceeds all values in the lookback window and each low is below its corresponding window to identify significant swing levels.
+
+Tracking the HTF array state with permission flags and arrays to store price levels, indices, and whether each level has been breached or triggered. Also initializing conditions for Bull and Bear Market Structure Shifts.
+
+Now iterating through each bar to check for array breaks. When the high closes above a bearish array's upper boundary plus the ATR buffer, that array is marked as broken and the index is recorded. Similarly, when the low closes below a bullish array's lower boundary minus the buffer, that array breaks and the index gets stored.
+
+I'm being careful not to double-count entries—when an array is already marked as broken, I skip updating it again. For bars without sufficient history, I need to validate the lookback index before accessing arrays, otherwise I skip that bar entirely.
+
+On the first pass, I'm storing the pivot high and low prices along with their indices in the arrays. Each array gets flagged as valid when a pivot is recorded. The arrays track the last 100 pivots maximum, so I'm using modulo indexing to manage the circular buffer and avoid unnecessary resizing.
+
+When an array exists, I retrieve the most recent values to determine the highest high and lowest low seen so far. The lookback period for detecting breaks is set to 100 bars. For each bar, I check if the current high exceeds the stored high plus the ATR buffer—this marks a bearish break and invalidates that array. Similarly, if the current low drops below the stored low minus the ATR buffer, that's a bullish break. The break indices are recorded in separate arrays to track when these conditions occurred. if i - MSL_I[idx] < 0:
+                        continue
+                    if MSL_P[idx] + atr_buf > low[i] and MSL_P[idx] - atr_buf < close[i] and not L_already_triggered[idx]:
+                        L_already_triggered[idx] = True
+                        LAlert = True
+                        L_Index = MSL_I[idx]
+                        L_Price = MSL_P[idx]
+                if MSL_P[idx] - atr_buf > close[i] and not L_already_triggered[idx]:
+                    L_already_triggered[idx] = True
+                    L_Index = MSL_I[idx]
+                    L_Price = MSL_P[idx]
+        else:
+            idx = len(MSH_P) - i
+            if idx >= 0:
+                if i - MSH_I[idx] >= 0 and not H_already_triggered[idx]:
+                    if MSH_P[idx] - atr_buf < high[i] and MSH_P[idx] + atr_buf > close[i] and not H_already_triggered[idx]:
+                        H_already_triggered[idx] = True
+                        HAlert = True
+                        H_Index = MSH_I[idx]
+                        H_Price = MSH_P[idx]
+                if MSH_P[idx] + atr_buf < close[i] and not H_already_triggered[idx]:
+                    H_already_triggered[idx] = True
+                    H_Index = MSH_I[idx]
+                    H_Price = MSH_P[idx]
+        
+        # FVG Detection
+        if i >= 2:
+            if low[i-1] > high[i]:
+                FVG_Bull[i] = True
+            if high[i-1] < low[i]:
+                FVG_Bear[i] = True
+        
+        # Store HTF alerts
+        H
+
+I'm handling the array iteration differently based on direction—checking low conditions first for bearish setups, then high conditions for bullish ones. When a threshold gets hit, I mark the alert as triggered and record the price and index. Then I detect FVGs by comparing consecutive bars for gaps in either direction. The bullish and bearish FVG conditions are evaluated separately, then I check if the detected FVG aligns with the current market structure. For bullish setups, the FVG low must fall below the array low, and for bearish ones, the FVG high must exceed the array high.
+
+When the conditions align, I trigger the corresponding MSS signal and record the timestamp, price, and trade direction. I increment the trade counter and prepare the entry record with all the necessary information about the detected setup. bar_index = i
+    
+    # Store the HTF level info for later MSS detection
+    H_Price = H_Price_HTF[i] if not na else na
+    L_Price = L_Price_HTF[i] if not na else na
+    
+    # Entry logic
+    if H_Alert[i] and close[i] > H_Price:
+        strategy.entry("Long", strategy.long)
+    
+    if L_Alert[i] and close[i] < L_Price:
+        strategy.entry("Short", strategy.short)
+    
+    plot(H_Price, color=color.green, linewidth=2)
+    plot(L_Price, color=color.red, linewidth=2)
+
+I'm checking if the close price crosses above the high array level for long entries and below the low array level for shorts. When conditions align, I trigger the corresponding direction and plot the levels. The logic filters based on whether FVG is enabled and validates both the price action and the array penetration before executing. price_a = entry_price
+    entry_dict['raw_price_b'] = entry_price
+    entries.append(entry_dict)
+    trade_num += 1
+    
+    return entries
+
+I'm simplifying the logic to just detect when the array level breaks with ATR confirmation, then trigger an entry. For bullish moves, I need the close above the low array level plus buffer; for bearish moves, the close below the high array level minus buffer. I'm setting both raw_price values to the entry price, then appending the trade and incrementing the counter before returning. The MSS (Market Structure Shift) detection relies on the array level getting broken and the alert firing. I need to check if the array has already been triggered before proceeding, then verify the price action aligns with the structure. For bearish setups, the high must close below the array level minus the buffer, and for bullish setups, the low must close above the array level plus the buffer. The FVG filter then validates the fair value gap direction matches the intended trade direction. I'm simplifying the logic by tracking MSS occurrences and ensuring entries only trigger once per condition. The FVG filter checks whether the detected gap aligns with the trade direction—bullish FVGs for long positions, bearish for shorts—then validates the entry price falls within the gap's range. Finally, I compile all detected entries into a list with metadata like trade number, direction, entry/exit timestamps, and price information. "Short", time=int(timestamps[i]), entry_time=datetime.fromtimestamp(timestamps[i], tz=timezone.utc).isoformat(), entry_price_guess=close[i], exit_ts=0, exit_time="", exit_price_guess=0.0, raw_price_a=close[i], raw_price_b=close[i]} entries.append(entry_dict) trade_num += 1
+
+Short entries get recorded similarly with their timestamp and closing price, then the counter increments. The function returns the complete entries list. There's a potential inefficiency in recalculating arrays for each bar, so I should optimize the logic to compute arrays once upfront and reference them as needed.
+
+Looking at the Pine Script structure, it maintains three parallel arrays for high and low array levels. Each array entry stores a price level and its corresponding timestamp, which I can track separately. The key is to avoid redundant calculations while maintaining the same detection logic for both bullish and bearish array breaks.
+
+The indicator checks if a high array gets breached by comparing the close against the stored level adjusted by an ATR multiplier. When the close exceeds this threshold, it marks that particular array as invalidated and records the index where the breach occurred. Similarly, low arrays track bearish breaks when prices close below their adjusted levels. I'm also detecting fair value gaps in both directions—bullish FVGs form when the prior low exceeds the current high, and bearish FVGs form when the prior high falls below the current low. The logic then evaluates whether the FVG low sits below the low array price to confirm the bullish setup. if array_low > 0 and close[i] > array_low + atr_buf:
+            Bear_MSS[i] = True
+            if low[i-1] > high[i] and low[i] < array_low:
+                FVG_Bull_Cond[i] = True
+    
+    # MSS Detection - simplified
+    if Bull_MSS[i] and (not use_fvg_filter or FVG_Bull_Cond[i]):
+        in_trade = True
+        trade_num += 1
+        entry_dict = {'trade_num': trade_num, 'direction': "Long", 'entry_ts': int(timestamps[i]), 'entry_time': datetime.fromtimestamp(timestamps[i], tz=timezone.utc).isoformat()}
+        entries.append(entry_dict)
+
+For bearish signals, I'm checking if the price breaks below the array low minus the ATR buffer, then validating with the FVG filter if needed. When conditions align, I increment the trade counter and log the entry with timestamp and direction.
+
+But I'm realizing this approach is becoming unwieldy. The MSS logic in the original Pine Script is stateful and persists across bars, which doesn't translate cleanly to a vectorized Python implementation. I need to reconsider how to track the high and low array states and their interactions with FVG detection. break and HAlert gets set when that happens.
+
+For the Python implementation, I need to handle this differently since each bar is processed independently. The key insight is that once an array is broken, subsequent bars that also satisfy the break condition shouldn't re-trigger entries. To manage this, I'll track which arrays have already been broken using boolean arrays indexed by bar number, so each array only produces one entry even if the price crosses the threshold multiple times.
+
+I'll use two arrays: `H_Broken` and `L_Broken` to mark which array points have been breached. When processing each bar, I check if the high or low has crossed the array threshold, and only generate a signal if that particular array hasn't been broken yet. Then I mark it as broken to prevent duplicate entries.
+
+If the current high exceeds the array high plus a buffer, I set `Bull_MSS` and record the array index in `H_Break_Idx`. Similarly, if the current low drops below the array low minus a buffer, I set `Bear_MSS` and store the array index. For FVG conditions, I'm checking for bullish FVGs where the previous low exceeds the current high. The remaining code appears to be setting up variables to track array levels and their validity periods across the dataset. This section processes each bar to identify market structure shifts by checking for array breaks and FVG conditions. When a bullish array break occurs with sufficient price movement beyond the ATR buffer, it validates the shift. The logic then cross-references this with FVG zones to confirm the pattern—if a bullish FVG exists where the low penetrates below the array low, the structure shift becomes active for long entries. The same validation applies in reverse for bearish shifts and short positions. _idx], 'entry_time': datetime.fromtimestamp(timestamps[h_break_idx[i]], tz=timezone.utc).isoformat(), 'entry_price_guess': close[i], 'exit_ts': 0, 'exit_time': "", 'exit_price_guess': 0.0, 'raw_price_a': close[i], 'raw_price_b': close[i]} entries.append(entry_dict) trade_num += 1
+
+For bearish shifts, I check if the short condition triggers and then validate the FVG filter. If the FVG is bearish, I record the entry with the corresponding timestamp and price data. # Check if pivot low is valid
+for i in range(SwingPeriod, n - SwingPeriod):
+    if pivot_low_idx[i] == 0:
+        continue
+    
+    for j in range(len(MSL_P)):
+        if MSL_I[j] == pivot_low_idx[i]:
+            MSL_P[j] = low[pivot_low_idx[i]]
+            MSL_Permit[j] = True
+            AOI_MSL[j] = Z
+    
+    if pivot_low_idx[i] not in MSL_I:
+        MSL_P.append(low[pivot_low_idx[i]])
+        MSL_I.append(pivot_low_idx[i])
+        MSL_Permit.append(True)
+        AOI_MSL.append(Z)
+
+I'm iterating through each bar to find valid pivot lows, then checking if they already exist in the tracked list. If the pivot index is new, I add it along with its price level and initialize the permit and AOI flags. = True
+            AOI_MSL.append(Z)
+
+The arrays track recent swing highs and lows with permission flags to determine when to use them for entry signals. When a high or low is discovered, it's added to the corresponding array along with a timestamp and a permit flag initialized to True. The arrays maintain a maximum of 100 entries to keep memory usage bounded. When the high exceeds a swing high level, a bullish signal triggers and that level gets marked as no longer permitted.
+
+For the Python implementation, I'm storing recent highs and lows in arrays with timestamps and a flag indicating whether each level is still active. The current price is compared against these stored levels to generate signals. Low_Swing_Idx = []
+Low_Swing_Permit = []
+AOI_MSL = []
+
+Bull_MSS = np.zeros(n, dtype=bool)
+Bear_MSS = np.zeros(n, dtype=bool)
+H_Break_Idx = np.zeros(n, dtype=int)
+L_Break_Idx = np.zeros(n, dtype=int)
+FVG_Bull_Cond = np.zeros(n, dtype=bool)
+FVG_Bear_Cond = np.zeros(n, dtype=bool)
+HTF_H_Valid = np.zeros(n, dtype=bool)
+HTF_L_Valid = np.zeros(n, dtype=bool)
+
+H_Price_Array = []
+L_Price_Array = []
+H_Index_Array = []
+L_Index_Array = []
+H_Break_Time = []
+L_Break_Time = []
+
+for i in range(n):
+    if i < 2:
+        continue
+    
+    bull_fvg = low[i-1] > high[i]
+    bear_fvg = high[i-1] < low[i]
+    FVG_Bull_Cond[i] = bull_fvg
+    FVG_Bear_Cond[i] = bear_fvg
+    
+    atr_val = atr[i] if i >= SwingPeriod else atr[SwingPeriod]
+    atr_buf = atr_val * ATR_Coefficient
+    
+    bull_mss = False
+    bear_mss = False
+    
+    for j, (hs_price, hs_idx, hs_permit) in enumerate(zip(High_Swing_Prices, High_Swing_Idx, High_Swing_Permit)):
+        if hs_permit:
+            if close[i] > hs_price + atr_buf:
+                bull_mss = True
+                High_Swing_Permit[j] = False
+                break
+    
+    for j, (ls_price, ls_idx, ls_permit) in enumerate(zip(Low_Swing_Prices, Low_Swing_Idx, Low_Swing_Permit)):
+        if ls_permit:
+            if close[i] < ls_price - atr_buf:
+                bear_mss = True
+                Low_Swing_Permit[j] = False
+                break
+    
+    Bull_MSS[i] = bull_mss
+    Bear_MSS[i] = bear_mss
+
+Now I'm tracking when price breaks through swing highs or lows by a threshold, marking those levels as invalid once triggered and recording the signals. H_Price_Array.append(high[i])
+                    H_Index_Array.append(i)
+                    H_Break_Time.append(timestamps[i])
+                    H_Break_Idx[i] = len(H_Price_Array) - 1
+                    HTF_H_Valid[i] = True
+                    break
+        
+        # Check for Bearish break (close below low swing level)
+        for j in range(len(L_Swing_Prices) - 1, -1, -1):
+            if L_Swing_Permit[j] and close[i] < L_Swing_Prices[j] - atr_buf:
+                Bear_MSS[i] = True
+                L_Swing_Permit[j] = False
+                if len(L_Price_Array) < 100:
+                    L_Price_Array.append(low[i])
+                    L_Index_Array.append(i)
+                    L_Break_Time.append(timestamps[i])
+                    L_Break_Idx[i] = len(L_Price_Array) - 1
+                    HTF_L_Valid[i] = True
+                    break
+
+        # FVG Detection
+        if i >= 2:
+            if low[i-1] > high[i]:
+                FVG_Bull_Cond[i] = True
+            if high[i-1] < low[i]:
+                FVG_Bear_Cond[i] = True
+
+I'm tracking when price breaks below swing lows and marking those as bearish momentum shifts. The logic also identifies fair value gaps in both directions—when the previous low exceeds the current high it's bullish, and when the previous high falls below the current low it's bearish. Both conditions are flagged for later analysis. True
+    
+    # Long Entry
+    if Bull_MSS[i] and HTF_H_Valid[i] and H_Break_Idx[i] >= 0:
+        h_break_idx = H_Break_Idx[i]
+        if h_break_idx < len(H_Price_Array):
+            if FVG_Bull_Cond[i] or not use_fvg_filter:
+                if H_Price_Array[h_break_idx] > 0 and close[i] > H_Price_Array[h_break_idx]:
+                    entry_dict = {'trade_num': trade_num, 'direction': "Long", 'entry_ts': int(timestamps[i]), 'entry_time': datetime.fromtimestamp(timestamps[i], tz=timezone.utc).isoformat(), 'entry_price_guess': close[i], 'exit_ts': 0, 'exit_time': "", 'exit_price_guess': 0.0, 'raw_price_a': close[i], 'raw_price_b': close[i]}
+                    entries.append(entry_dict)
+                    trade_num += 1
+    
+    # Short Entry  
+    if Bear_MSS[i] and HTF_L_Valid[i] and L_Break_Idx[i] >= 0:
+        l_break_idx = L_Break_Idx[i]
+        if l_break_idx < len(L_Price_Array):
+            if FVG_Bear_Cond[i] or not use_fvg_filter:
+                if L_Price_Array[l_break_idx] > 0 and close[i] < L_Price_Array[l_break_idx]:
+                    entry_dict = {'trade_num': trade_num, 'direction': "Short", 'entry_ts': int(timestamps[i]), 'entry_time': datetime.fromtimestamp(timestamps[i], tz=timezone.utc).isoformat(), 'entry_price_guess': close[i], 'exit_ts': 0, 'exit_time': "", 'exit_price_guess': 0.0, 'raw_price_a': close[i], 'raw_price_b': close[i]}
+                    entries.append(entry_dict)
+                    trade_num += 1
+
+For short entries, I'm checking the bearish market structure shift with valid lower break points. If the FVG condition aligns or no filter is active, and the break price is valid, I record a short position with the entry timestamp and price. The structure mirrors the long entry logic but inverts the comparison operators and trade direction. I need to be more careful about the FVG logic. Looking at the Pine Script, there's a validation check that compares the FVG high against the array low for bullish conditions, and the FVG low against the array high for bearish conditions. This confirms the directional relationship I was tracking.
+
+The MSS detection appears to trigger when the price closes beyond the array level plus the ATR buffer. Once that happens, the logic checks if there's a valid FVG present—if so, entry is confirmed; otherwise, it proceeds without one. For the Python implementation, I'll track the break index and validate the FVG filter accordingly before allowing the entry. , direction='short', entry_ts=int(timestamps[i]), entry_time=datetime.fromtimestamp(timestamps[i], tz=timezone.utc).isoformat(), entry_price_guess=close[i], exit_ts=0, exit_time='', exit_price_guess=0.0, raw_price_a=close[i], raw_price_b=close[i]}) trade_num += 1 return entries
+
+I'm handling short entries similarly—when Bear_MSS triggers and the FVG condition is met, I append the trade record with the short direction. Finally, I return the complete list of entries with all metadata populated.
+
+However, there's a critical issue with my MSS detection logic. The Pine Script identifies MSS when price closes beyond the swing level plus the ATR buffer in either direction. My current implementation is checking against the most recent swing point instead of validating whether the close actually exceeds the array level threshold. I need to verify the close price against the appropriate swing high or low plus the ATR buffer to properly detect the market structure shift. (S
+SwingPeriod, n - SwingPeriod):
+        valid = True
+        for j in range(1, SwingPeriod + 1):
+            if high[i] < high[i-j] or high[i] < high[i+j]:
+                valid = False
+                break
+        if valid:
+            pivot_high[i] = high[i]
+    
+    # Pivot Low
+    for i in range(SwingPeriod, n - SwingPeriod):
+        valid = True
+        for j in range(1, SwingPeriod + 1):
+            if low[i] > low[i-j] or low[i] > low[i+j]:
+                valid = False
+                break
+        if valid:
+            pivot_low[i] = low[i]
+
+I'm identifying swing highs and lows by checking if each bar is higher than all bars within the SwingPeriod on both sides. A bar qualifies as a pivot if it exceeds all neighbors within that window.
+
+Now I need to track recent swing points and their validity. I'll maintain arrays for swing highs and lows, keeping only the most recent 100 entries to manage memory. Each swing point gets a permit flag to indicate whether it's still active for trading decisions.
+
+The MSS signal tracking uses boolean arrays to mark

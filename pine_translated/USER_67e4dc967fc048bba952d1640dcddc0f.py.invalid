@@ -1,0 +1,10 @@
+def generate_entries(df: pd.DataFrame) -> list:
+    # Ensure columns exist
+    # Compute hour from timestamp
+    # Compute isValidTradeTime
+    # Compute bfvg and sfvg
+    # Loop over rows from index 2 onward (since need high[2] and low[2])
+    # For each valid row, if bfvg and isValidTradeTime => long entry
+    # If sfvg and isValidTradeTime => short entry
+    # Append dict
+    # Return list

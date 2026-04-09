@@ -1,0 +1,244 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    Convert Pine Script strategy entry logic to Python.
+    Uses default input values from the Pine Script.
+    """
+    # Wilder RSI implementation
+    def wilder_rsi(series: pd.Series, length: int) -> pd.Series:
+        delta = series.diff()
+        gain = delta.where(delta > 0, 0.0)
+        loss = (-delta).where(delta < 0, 0.0)
+        avg_gain = gain.ewm(alpha=1/length, min_periods=length, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/length, min_periods=length, adjust=False).mean()
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
+
+    # Wilder ATR implementation
+    def wilder_atr(high: pd.Series, low: pd.Series, close: pd.Series, length: int) -> pd.Series:
+        prev_close = close.shift(1)
+        tr1 = high - low
+        tr2 = (high - prev_close).abs()
+        tr3 = (low - prev_close).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.ewm(alpha=1/length, min_periods=length, adjust=False).mean()
+        return atr
+
+    # T3 calculation
+    def calc_t3(src: pd.Series, length: int, factor: float) -> pd.Series:
+        e1 = src.ewm(span=length, adjust=False).mean()
+        e2 = e1.ewm(span=length, adjust=False).mean()
+        e3 = e2.ewm(span=length, adjust=False).mean()
+        e4 = e3.ewm(span=length, adjust=False).mean()
+        e5 = e4.ewm(span=length, adjust=False).mean()
+        e6 = e5.ewm(span=length, adjust=False).mean()
+        c1 = -factor * factor * factor
+        c2 = 3 * factor * factor + 3 * factor * factor * factor
+        c3 = -6 * factor * factor - 3 * factor - 3 * factor * factor * factor
+        c4 = 1 + 3 * factor + factor * factor * factor + 3 * factor * factor
+        return c1 * e6 + c2 * e5 + c3 * e4 + c4 * e3
+
+    # TDFI calculation functions
+    def tema_tdfi(src: pd.Series, length: int) -> pd.Series:
+        ema1 = src.ewm(span=length, adjust=False).mean()
+        ema2 = ema1.ewm(span=length, adjust=False).mean()
+        ema3 = ema2.ewm(span=length, adjust=False).mean()
+        return 3 * ema1 - 3 * ema2 + ema3
+
+    def ma_tdfi(mode: str, src: pd.Series, length: int) -> pd.Series:
+        if mode == 'ema':
+            return src.ewm(span=length, adjust=False).mean()
+        elif mode == 'wma':
+            return src.rolling(window=length).apply(lambda x: np.dot(x, np.arange(1, length+1)) / np.arange(1, length+1).sum(), raw=True)
+        elif mode == 'swma':
+            weights = np.array([0.153, 0.153, 0.153, 0.153, 0.153, 0.153, 0.128, 0.108])
+            return src.rolling(window=8).apply(lambda x: np.sum(weights * x), raw=True)
+        elif mode == 'vwma':
+            return src.rolling(window=length).mean()
+        elif mode == 'hull':
+            half_length = int(length / 2)
+            wma1 = src.rolling(window=half_length).apply(lambda x: np.dot(x, np.arange(1, half_length+1)) / np.arange(1, half_length+1).sum(), raw=True)
+            wma2 = src.rolling(window=length).apply(lambda x: np.dot(x, np.arange(1, length+1)) / np.arange(1, length+1).sum(), raw=True)
+            hull = 2 * wma1 - wma2
+            sqrt_length = int(np.sqrt(length))
+            return hull.rolling(window=sqrt_length).apply(lambda x: np.dot(x, np.arange(1, sqrt_length+1)) / np.arange(1, sqrt_length+1).sum(), raw=True)
+        elif mode == 'tema':
+            return tema_tdfi(src, length)
+        else:
+            return src.rolling(window=length).mean()
+
+    # Default parameter values from Pine Script
+    factor_t3 = 0.7
+    signal_type_t3 = 'MA + Price'
+    cross_only_t3 = True
+    use_tdfi = True
+    cross_tdfi = True
+    inverse_tdfi = True
+    filter_high_tdfi = 0.05
+    filter_low_tdfi = -0.05
+    lookback_tdfi = 13
+    n_length_tdfi = 3
+    mma_length_tdfi = 13
+    mma_mode_tdfi = 'ema'
+    smma_length_tdfi = 13
+    smma_mode_tdfi = 'ema'
+    use_ttms = True
+    red_green_ttms = True
+    cross_ttms = True
+    inverse_ttms = False
+    highlight_movements_ttms = True
+
+    # T3 calculations
+    t3_25 = calc_t3(df['close'], 25, factor_t3)
+    t3_100 = calc_t3(df['close'], 100, factor_t3)
+    t3_200 = calc_t3(df['close'], 200, factor_t3)
+
+    # T3 conditions
+    long_cond_indi_t3 = (df['close'] > t3_25) & (df['close'] > t3_100) & (df['close'] > t3_200)
+    short_cond_indi_t3 = (df['close'] < t3_25) & (df['close'] < t3_100) & (df['close'] < t3_200)
+    long_cond_indi_t3_ma = (t3_100 < t3_25) & (t3_200 < t3_100)
+    short_cond_indi_t3_ma = (t3_100 > t3_25) & (t3_200 > t3_100)
+
+    # T3 signal combination
+    if signal_type_t3 == 'MA + Price':
+        long_cond_indi = long_cond_indi_t3 & long_cond_indi_t3_ma
+        short_cond_indi = short_cond_indi_t3 & short_cond_indi_t3_ma
+    elif signal_type_t3 == 'MA Only':
+        long_cond_indi = long_cond_indi_t3_ma
+        short_cond_indi = short_cond_indi_t3_ma
+    else:
+        long_cond_indi = long_cond_indi_t3
+        short_cond_indi = short_cond_indi_t3
+
+    signal_entry_long_t3 = long_cond_indi
+    signal_entry_short_t3 = short_cond_indi
+
+    # CrossOnly filter for T3
+    if cross_only_t3:
+        prev_long = signal_entry_long_t3.shift(1).fillna(False)
+        prev_short = signal_entry_short_t3.shift(1).fillna(False)
+        signal_entry_long_t3 = signal_entry_long_t3 & ~prev_long
+        signal_entry_short_t3 = signal_entry_short_t3 & ~prev_short
+
+    # T3 inverse
+    final_long_t3 = signal_entry_short_t3 if inverse_tdfi else signal_entry_long_t3
+    final_short_t3 = signal_entry_long_t3 if inverse_tdfi else signal_entry_short_t3
+
+    # TDFI calculation
+    lookback_tdfi_computed = max(lookback_tdfi * n_length_tdfi, 1)
+    mma_tdfi = ma_tdfi(mma_mode_tdfi, df['close'] * 1000, mma_length_tdfi)
+    smma_tdfi = ma_tdfi(smma_mode_tdfi, mma_tdfi, smma_length_tdfi)
+    impet_mma = mma_tdfi - mma_tdfi.shift(1)
+    impet_smma = smma_tdfi - smma_tdfi.shift(1)
+    div_ma = (mma_tdfi - smma_tdfi).abs()
+    aver_impet = (impet_mma + impet_smma) / 2
+    tdf = (div_ma ** 1) * (aver_impet ** n_length_tdfi)
+    tdf_highest = tdf.abs().rolling(window=lookback_tdfi_computed).max()
+    signal_tdfi = tdf / tdf_highest
+
+    # TDFI signals
+    if cross_tdfi:
+        signal_long_tdfi = signal_tdfi > signal_tdfi.shift(1).fillna(0) & (signal_tdfi > filter_high_tdfi) & (signal_tdfi.shift(1) <= filter_high_tdfi)
+        signal_short_tdfi = signal_tdfi < signal_tdfi.shift(1).fillna(0) & (signal_tdfi < filter_low_tdfi) & (signal_tdfi.shift(1) >= filter_low_tdfi)
+    else:
+        signal_long_tdfi = signal_tdfi > filter_high_tdfi
+        signal_short_tdfi = signal_tdfi < filter_low_tdfi
+
+    final_long_tdfi = signal_short_tdfi if inverse_tdfi else signal_long_tdfi
+    final_short_tdfi = signal_long_tdfi if inverse_tdfi else signal_short_tdfi
+
+    # TTM Squeeze calculations
+    length_ttms = 20
+    bb_basis = df['close'].rolling(window=length_ttms).mean()
+    bb_std = df['close'].rolling(window=length_ttms).std()
+    bb_upper = bb_basis + 2.0 * bb_std
+    bb_lower = bb_basis - 2.0 * bb_std
+
+    kc_basis = df['close'].rolling(window=length_ttms).mean()
+    tr = pd.concat([df['high'] - df['low'],
+                    (df['high'] - df['close'].shift(1)).abs(),
+                    (df['low'] - df['close'].shift(1)).abs()], axis=1).max(axis=1)
+    dev_kc = tr.rolling(window=length_ttms).mean()
+    kc_upper_high = kc_basis + dev_kc * 1.0
+    kc_lower_high = kc_basis - dev_kc * 1.0
+    kc_upper_mid = kc_basis + dev_kc * 1.5
+    kc_lower_mid = kc_basis - dev_kc * 1.5
+    kc_upper_low = kc_basis + dev_kc * 2.0
+    kc_lower_low = kc_basis - dev_kc * 2.0
+
+    no_sqz = (bb_lower < kc_lower_low) | (bb_upper > kc_upper_low)
+    low_sqz = (bb_lower >= kc_lower_low) | (bb_upper <= kc_upper_low)
+    mid_sqz = (bb_lower >= kc_lower_mid) | (bb_upper <= kc_upper_mid)
+    high_sqz = (bb_lower >= kc_lower_high) | (bb_upper <= kc_upper_high)
+
+    # Momentum calculation
+    highest_high = df['high'].rolling(window=length_ttms).max()
+    lowest_low = df['low'].rolling(window=length_ttms).min()
+    sma_close = df['close'].rolling(window=length_ttms).mean()
+    avg_hl = (highest_high + lowest_low) / 2
+    avg_val = (avg_hl + sma_close) / 2
+    detrent = df['close'] - avg_val
+
+    mom = detrent.rolling(window=length_ttms).apply(
+        lambda x: np.polyfit(np.arange(length_ttms), x, 1)[0] if len(x) == length_ttms else np.nan, raw=True
+    )
+
+    # TTM Squeeze signals
+    basic_long_ttms = (mom > 0)
+    basic_short_ttms = (mom < 0)
+
+    if red_green_ttms:
+        basic_long_ttms = (mom == 1)
+        basic_short_ttms = (mom == -1)
+
+    ttms_long = no_sqz & basic_long_ttms if highlight_movements_ttms else basic_long_ttms
+    ttms_short = no_sqz & basic_short_ttms if highlight_movements_ttms else basic_short_ttms
+
+    if cross_ttms:
+        ttms_long = ttms_long & ~ttms_long.shift(1).fillna(False)
+        ttms_short = ttms_short & ~ttms_short.shift(1).fillna(False)
+
+    ttms_final_long = ttms_short if inverse_ttms else ttms_long
+    ttms_final_short = ttms_long if inverse_ttms else ttms_short
+
+    # Combined long and short conditions
+    long_condition = final_long_t3 & final_long_tdfi & basic_long_ttms
+    short_condition = final_short_t3 & final_short_tdfi & basic_short_ttms
+
+    # Generate entries
+    entries = []
+    trade_num = 1
+
+    for i in range(len(df)):
+        ts = int(df['time'].iloc[i])
+        entry_time = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+        if long_condition.iloc[i]:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'long',
+                'entry_ts': ts,
+                'entry_time': entry_time,
+                'entry_price_guess': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': df['close'].iloc[i],
+                'raw_price_b': df['close'].iloc[i]
+            })
+            trade_num += 1
+        elif short_condition.iloc[i]:
+            entries.append({
+                'trade_num': trade_num,
+                'direction': 'short',
+                'entry_ts': ts,
+                'entry_time': entry_time,
+                'entry_price_guess': df['close'].iloc[i],
+                'exit_ts': 0,
+                'exit_time': '',
+                'exit_price_guess': 0.0,
+                'raw_price_a': df['close'].iloc

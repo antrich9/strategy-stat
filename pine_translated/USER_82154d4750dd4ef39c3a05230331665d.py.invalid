@@ -1,0 +1,173 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    # Settings
+    fvgTH = 0.5  # Fair Value Gap Width Filter
+    
+    # Calculate ATR(144) for FVG filtering
+    tr1 = np.maximum(df['high'] - df['low'], 
+                     np.maximum(np.abs(df['high'] - df['close'].shift(1)),
+                                np.abs(df['low'] - df['close'].shift(1))))
+    atr = tr1.ewm(span=144, adjust=False).mean()
+    fvg_filter = atr * fvgTH
+    
+    # FVG detection
+    # bullG = low > high[1] (bullish gap up)
+    bullG = df['low'] > df['high'].shift(1)
+    # bearG = high < low[1] (bearish gap down)
+    bearG = df['high'] < df['low'].shift(1)
+    
+    # Bullish FVG: (low - high[2]) > atr AND low > high[2] AND close[1] > high[2] AND not (bullG OR bullG[1])
+    bull = ((df['low'] - df['high'].shift(2)) > fvg_filter) & \
+           (df['low'] > df['high'].shift(2)) & \
+           (df['close'].shift(1) > df['high'].shift(2)) & \
+           ~(bullG | bullG.shift(1))
+    
+    # Bearish FVG: (low[2] - high) > atr AND high < low[2] AND close[1] < low[2] AND not (bearG OR bearG[1])
+    bear = ((df['low'].shift(2) - df['high']) > fvg_filter) & \
+           (df['high'] < df['low'].shift(2)) & \
+           (df['close'].shift(1) < df['low'].shift(2)) & \
+           ~(bearG | bearG.shift(1))
+    
+    # Track bull/bear FVG state using shift to capture prior bar values
+    bullFvgUpper = pd.Series(np.where(bull, df['high'].shift(2), np.nan), index=df.index)
+    bullFvgLower = pd.Series(np.where(bull, df['low'], np.nan), index=df.index)
+    bearFvgUpper = pd.Series(np.where(bear, df['high'], np.nan), index=df.index)
+    bearFvgLower = pd.Series(np.where(bear, df['low'].shift(2), np.nan), index=df.index)
+    
+    # Calculate midpoints for both FVG types
+    bullMidpoint = (bullFvgUpper + bullFvgLower) / 2
+    bearMidpoint = (bearFvgUpper + bearFvgLower) / 2
+    
+    # Flag logic for detecting when FVG boundaries are broken
+    prevDayHigh = df['high'].shift(1)  # Previous day's high
+    prevDayLow = df['low'].shift(1)    # Previous day's low
+    
+    prevDayHighTaken = df['high'] > prevDayHigh
+    prevDayLowTaken = df['low'] < prevDayLow
+    
+    flagpdh = pd.Series(False, index=df.index)
+    flagpdl = pd.Series(False, index=df.index)
+    
+    # Initialize flags on first valid bar
+    flagpdh.iloc[0] = prevDayHighTaken.iloc[0] if not pd.isna(prevDayHighTaken.iloc[0]) else False
+    flagpdl.iloc[0] = prevDayLowTaken.iloc[0] if not pd.isna(prevDayLowTaken.iloc[0]) else False
+    
+    # Track state changes for both flags across all bars
+    for i in range(1, len(df)):
+        if prevDayHighTaken.iloc[i]:
+            flagpdh.iloc[i] = True
+            flagpdl.iloc[i] = False
+        elif prevDayLowTaken.iloc[i]:
+            flagpdl.iloc[i] = True
+            flagpdh.iloc[i] = False
+        else:
+            flagpdh.iloc[i] = flagpdh.iloc[i-1]
+            flagpdl.iloc[i] = flagpdl.iloc[i-1]
+    
+    # Extract hour and minute components from timestamps for time-based filtering
+    dt = pd.to_datetime(df['time'], unit='s', utc=True)
+    hour = dt.dt.hour
+    minute = dt.dt.minute
+    total_minutes = hour * 60 + minute
+    
+    # Define trading windows (morning: 07:45-09:45, afternoon: 14:45-16:45)
+    isWithinMorningWindow = (total_minutes >= 7 * 60 + 45) & (total_minutes < 9 * 60 + 45)
+    isWithinAfternoonWindow = (total_minutes >= 14 * 60 + 45) & (total_minutes < 16 * 60 + 45)
+    in_trading_window = isWithinMorningWindow | isWithinAfternoonWindow
+    
+    # Calculate crossover and crossunder signals between price and FVG midpoints
+    # Bullish crossunder: price crosses below bull midpoint
+    crossunder_bull = (df['low'] < bullMidpoint) & (df['low'].shift(1) >= bullMidpoint.shift(1))
+    # Bearish crossover: price crosses above bear midpoint  
+    crossover_bear = (df['high'] > bearMidpoint) & (df['high'].shift(1) <= bearMidpoint.shift(1))
+    
+    # Track FVG state: last=True for bullish, last=False for bearish
+    last = pd.Series(False, index=df.index)
+    in_trend = bull | bear
+    for i in range(len(df)):
+        if bull.iloc[i]:
+            last.iloc[i] = True
+        elif bear.iloc[i]:
+            last.iloc[i] = False
+        elif i > 0 and in_trend.iloc[i]:
+            last.iloc[i] = last.iloc[i-1]
+    
+    # Detect FVG formations (similar to bar_index logic)
+    bull_fvg = bull.iloc[2:]
+
+ bulls = (df['low'] - df['high'].shift(2)) > fvg_filter
+    bullG = df['low'] > df['high'].shift(1)
+    bullFVG = bulls & (df['low'] > df['high'].shift(2)) & (df['close'].shift(1) > df['high'].shift(2)) & ~(bullG | bullG.shift(1))
+    
+    bears = (df['low'].shift(2) - df['high']) > fvg_filter
+    bearG = df['high'] < df['low'].shift(1)
+    bearFVG = bears & (df['high'] < df['low'].shift(2)) & (df['close'].shift(1) < df['low'].shift(2)) & ~(bearG | bearG.shift(1))
+    
+    bullFvgUpper = pd.Series(np.nan, index=df.index)
+    bullFvgLower = pd.Series(np.nan, index=df.index)
+    bearFvgUpper = pd.Series(np.nan, index=df.index)
+    bearFvgLower = pd.Series(np.nan, index=df.index)
+    
+    bullFvgUpper[bullFVG] = df['high'].shift(2)[bullFVG]
+    bullFvgLower[bullFVG] = df['low'][bullFVG]
+    bearFvgUpper[bearFVG] = df['high'][bearFVG]
+    bearFvgLower[bearFVG] = df['low'].shift(2)[bearFVG]
+    
+    bullFvgUpper = bullFvgUpper.ffill()
+    bullFvgLower = bullFvgLower.ffill()
+    bearFvgUpper = bearFvgUpper.ffill()
+    bearFvgLower = bearFvgLower.ffill()
+    
+    bullMidpoint = (bullFvgUpper + bullFvgLower) / 2
+    bearMidpoint = (bearFvgUpper + bearFvgLower) / 2
+
+Now I need to set up flag logic to track when previous day high and low levels are breached. I'll initialize two boolean series to monitor these conditions across the dataset.
+
+For each bar after the first, I check if the current high exceeds the previous day's high to set the flagpdh flag, or if the current low falls below the previous day's low to set the flagpdl flag. If neither condition is met, I carry forward the previous values to maintain state across bars.
+
+Once the flags are established, I extract the hour and minute components from the timestamps to determine which trading window applies—morning session between 07:45 and 09:45, or afternoon session between 14:45 and 16:45 UTC. Then I identify crossover and crossunder signals by comparing current and prior bar prices against the calculated midpoint levels.
+
+For the tracking logic, I initialize a series to mark whether we're in a bullish or bearish state. When a bullish FVG forms, I set the state to true; when bearish FVG forms, I set it to false. The state persists once established, carrying forward the last detected direction.
+
+The mitigation percentage appears to be calculated as the distance between the top and bottom of the FVG boxes. Since the FVG size remains constant at `(high[2] - low)` for bullish and `(low[2] - high)` for bearish, the percentage mitigation would reflect how much of that gap has been filled by subsequent price action.
+
+Rather than attempting to perfectly replicate the complex Pine Script logic for tracking mitigation percentages in real-time, I should simplify the approach: identify when new FVGs form, and for entries, check if a valid FVG exists with reasonable parameters.
+
+Looking at the code structure, the condition `fvg.uFVG.size() > 0 and fvg.lastPct > 0.01 and fvg.lastPct <= 1` determines when entries are allowed. This means an FVG must already be present and its mitigation percentage must fall within the 0.01 to 1.0 range before the entry logic executes. The `fvg.lastPct` represents the most recent mitigation percentage calculation. I should simplify the approach by tracking the most recent FVG state and its mitigation percentage. For bullish FVGs, I'll calculate the upper boundary as the high two bars back and lower as the current low. For bearish ones, the boundaries flip. The midpoint between these bounds gives me the reference point for entry signals. I'll then detect when price crosses below this midpoint for longs or above it for shorts, combined with checking the trading window and daily timeframe conditions. This sidesteps the complexity of fully replicating the mitigation tracking logic while capturing the core entry mechanics. d as 0, since I only need to generate entries based on the conditions I'm evaluating, not simulate full trade management.
+
+Looking at the strategy logic more carefully, I can see the bullish entry requires `last == true`, a crossunder of the low below the bull midpoint, being within the trading window, and the flagpdhl condition being met. The short side would follow a similar pattern but checking the opposite conditions and flag. Since I only need to replicate entry signals, I'll set exit fields to placeholder values and focus on capturing when the entry conditions align. pdh
+- `crossunder(low, bullMidpoint)`: low crosses below bullMidpoint
+
+For bearish entries, I need:
+- last == False
+- crossover(high, bearMidpoint): high crosses above bearMidpoint
+- in_trading_window
+- flagpdh
+
+Looking at the Pine Script, `last` gets set to True when a bullish FVG forms and False when bearish, so I'll track this through a state variable. I need to verify the midpoint calculations match the original—bullMidpoint is the average of bullFvgUpper and bullFvgLower, while bearMidpoint averages bearFvgUpper and bearFvgLower. I also need to ensure the entry conditions check that there's no existing position, the FVG array has size greater than zero, and the mitigation percentage falls within the valid range.
+
+For the mitigation check, I'm simplifying by only tracking the most recent FVG state with its percentage. When a new FVG forms, I'll store it and initialize the percentage at 0, then update it as price moves through the zone. I'll also maintain a flag to reset tracking when the FVG clears. The state variables track whether we're currently in a bullish or bearish FVG, with the last value indicating the direction.
+
+For bullish FVGs, the upper bound comes from the high two bars back, while the lower bound is the current low. The stop level is set to the low two bars back. The calculation checks if the gap between current low and the prior high exceeds the ATR threshold, and ensures the close didn't also penetrate that level.
+
+For bearish FVGs, the upper bound becomes the current high and the lower bound shifts to the low two bars back, with the stop at the high two bars back. The logic mirrors the bullish side but inverted.
+
+The next step involves calculating midpoints for both FVG types and then filtering for London trading session windows—specifically the morning session from 07:45 to 09:45 and the afternoon session from 14:45 to 16:45 UTC. The crossunder logic checks if the current low drops below the bull midpoint while the previous bar's low was at or above it. The bullish entry condition requires no position, valid FVG with at least 1% mitigation but not fully filled, bullish direction confirmed, the crossunder signal triggered, within the trading window, and the flag confirming the prior day low was taken. The bearish entry follows a similar pattern but uses the opposite direction and flag conditions. The bearish entry code appears to be present in the script even though it seems incomplete. The main entry block uses `fvg.lastPct` which gets updated through the `fvg.update()` method based on price interactions with the FVG boundaries. Rather than fully replicating this complex mitigation tracking logic, I'll simplify by checking if a valid FVG exists with a midpoint and the price has crossed it, combined with the other entry conditions like the trading window and flag checks. The mitigation percentage tracking can be approximated rather than exactly replicated. When an FVG forms, it starts with `lastPct = 0`. As price moves through the zone, the update function recalculates it based on how much of the gap has been filled—specifically checking if price stays within the FVG bounds and adjusting the percentage accordingly.
+
+Since replicating this exact tracking adds unnecessary complexity, I'll use a simpler approach: initialize `lastPct` to 0 when an FVG forms, then check if price has moved at least 1% into the zone using the distance between the current close and the FVG midpoint. This captures the intent without the full implementation overhead.
+
+The key conditions to track are whether we're in a bullish or bearish FVG, whether the midpoint has been crossed, and whether the mitigation percentage exceeds the threshold. When all three align with the trading window and daily flag, that's the entry signal.

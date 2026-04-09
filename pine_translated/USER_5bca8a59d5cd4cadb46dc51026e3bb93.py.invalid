@@ -1,0 +1,94 @@
+import pandas as pd
+   import numpy as np
+   from datetime import datetime, timezone
+
+   def generate_entries(df: pd.DataFrame) -> list:
+       # Copy to avoid modifying original
+       df = df.copy()
+       
+       # Convert time to datetime
+       df['time_dt'] = pd.to_datetime(df['time'], unit='s', utc=True)
+       
+       # Set time_dt as index for resampling
+       df_indexed = df.set_index('time_dt')
+       
+       # Compute EMA (200)
+       ema = df['close'].ewm(span=200, adjust=False).mean()
+       
+       # Compute HTF (240 minute) high, low, close
+       htf = df_indexed[['high', 'low', 'close']].resample('240T').agg({'high': 'max', 'low': 'min', 'close': 'last'})
+       # Reindex to original index (forward fill)
+       htf_aligned = htf.reindex(df_indexed.index, method='ffill')
+       tf4h_high = htf_aligned['high']
+       tf4h_low = htf_aligned['low']
+       tf4h_close = htf_aligned['close']
+       
+       # Compute previous day high and low
+       daily = df_indexed[['high', 'low']].resample('D').agg({'high': 'max', 'low': 'min'})
+       prev_day = daily.shift(1)
+       prev_day_aligned = prev_day.reindex(df_indexed.index, method='ffill')
+       prev_day_high = prev_day_aligned['high']
+       prev_day_low = prev_day_aligned['low']
+       
+       # Compute conditions
+       in_uptrend = (df['close'] > ema) & (tf4h_close > ema)
+       in_downtrend = (df['close'] < ema) & (tf4h_close < ema)
+       
+       liquidity_sweep_low = (df['low'] < prev_day_low) & (df['close'] > prev_day_low)
+       liquidity_sweep_high = (df['high'] > prev_day_high) & (df['close'] < prev_day_high)
+       
+       bullish_fvg = (df['low'].shift(1) > df['high'].shift(2)) & (df['low'] > df['high'].shift(2))
+       bearish_fvg = (df['high'].shift(1) < df['low'].shift(2)) & (df['high'] < df['low'].shift(2))
+       
+       ob_bull = (df['low'].rolling(3).min() == df['low'].shift(1)) & (df['close'] > df['open'])
+       ob_bear = (df['high'].rolling(3).max() == df['high'].shift(1)) & (df['close'] < df['open'])
+       
+       # Day of week and hour
+       dayofweek = df_indexed.index.dayofweek
+       hour = df_indexed.index.hour
+       is_friday_morning = (dayofweek == 4) & (hour < 12)
+       
+       # Combined conditions
+       long_condition = in_uptrend & liquidity_sweep_low & bullish_fvg & ob_bull & ~is_friday_morning
+       short_condition = in_downtrend & liquidity_sweep_high & bearish_fvg & ob_bear & ~is_friday_morning
+       
+       # Fill NaN with False
+       long_condition = long_condition.fillna(False)
+       short_condition = short_condition.fillna(False)
+       
+       # Iterate and generate entries
+       entries = []
+       trade_num = 1
+       for i in df.index:
+           if long_condition.iloc[i]:
+               ts = df['time'].iloc[i]
+               entries.append({
+                   'trade_num': trade_num,
+                   'direction': 'long',
+                   'entry_ts': ts,
+                   'entry_time': datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                   'entry_price_guess': df['close'].iloc[i],
+                   'exit_ts': 0,
+                   'exit_time': '',
+                   'exit_price_guess': 0.0,
+                   'raw_price_a': df['close'].iloc[i],
+                   'raw_price_b': df['close'].iloc[i]
+               })
+               trade_num += 1
+           if short_condition.iloc[i]:
+               ts = df['time'].iloc[i]
+               entries.append({
+                   'trade_num': trade_num,
+                   'direction': 'short',
+                   'entry_ts': ts,
+                   'entry_time': datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                   'entry_price_guess': df['close'].iloc[i],
+                   'exit_ts': 0,
+                   'exit_time': '',
+                   'exit_price_guess': 0.0,
+                   'raw_price_a': df['close'].iloc[i],
+                   'raw_price_b': df['close'].iloc[i]
+               })
+               trade_num += 1
+       
+       return entries

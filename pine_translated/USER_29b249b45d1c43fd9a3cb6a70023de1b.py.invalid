@@ -1,0 +1,450 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    
+    # Copy to avoid modifying original
+    df = df.copy()
+    
+    # Calculate all indicators
+    close = df['close']
+    high = df['high']
+    low = df['low']
+    open_price = df['open']
+    
+    # Indicator settings (from Pine Script inputs)
+    # Risk Management
+    atrPeriod = 14
+    riskPerTrade = 1.0
+    atrMultiplier = 2.0
+    Rvalue = 1.0
+    takeProfitR = 20.0
+    
+    # Date Range
+    start_year = 2022
+    start_month = 1
+    start_date = 1
+    end_year = 2030
+    end_month = 1
+    end_date = 1
+    
+    # Indicator Selection
+    use_QQE = True
+    use_SSL = True
+    use_WAE = True
+    use_E2PSS = True
+    use_Trendilo = True
+    use_TTM = True
+    use_ALMA = False
+    use_QuickSilver = False
+    
+    entry_mode = "All Active"
+    
+    # QQE Settings
+    RSI_Period = 6
+    SF = 6
+    QQE = 3
+    ThreshHold = 3
+    qqeSrc = close
+    
+    Wilders_Period = RSI_Period * 2 - 1
+    
+    # Calculate RSI using Wilder's method
+    def calc_rsi(prices, period):
+        delta = prices.diff()
+        gain = delta.where(delta > 0, 0)
+        loss = (-delta).where(delta < 0, 0)
+        avg_gain = gain.ewm(alpha=1/period, min_periods=period).mean()
+        avg_loss = loss.ewm(alpha=1/period, min_periods=period).mean()
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
+    
+    Rsi = calc_rsi(qqeSrc, RSI_Period)
+    RsiMa = Rsi.ewm(span=SF, adjust=False).mean()
+    AtrRsi = abs(RsiMa.shift(1) - RsiMa)
+    MaAtrRsi = AtrRsi.ewm(span=Wilders_Period, adjust=False).mean()
+    dar = MaAtrRsi.ewm(span=Wilders_Period, adjust=False).mean() * QQE
+    
+    # QQE bands
+    longband = pd.Series(0.0, index=df.index)
+    shortband = pd.Series(0.0, index=df.index)
+    trend = pd.Series(0, index=df.index)
+    
+    RSIndex = RsiMa
+    DeltaFastAtrRsi = dar
+    
+    for i in range(len(df)):
+        if i == 0:
+            continue
+        newshortband = RSIndex.iloc[i] + DeltaFastAtrRsi.iloc[i]
+        newlongband = RSIndex.iloc[i] - DeltaFastAtrRsi.iloc[i]
+        
+        if RSIndex.iloc[i-1] > longband.iloc[i-1] and RSIndex.iloc[i] > longband.iloc[i-1]:
+            longband.iloc[i] = max(longband.iloc[i-1], newlongband)
+        else:
+            longband.iloc[i] = newlongband
+            
+        if RSIndex.iloc[i-1] < shortband.iloc[i-1] and RSIndex.iloc[i] < shortband.iloc[i-1]:
+            shortband.iloc[i] = min(shortband.iloc[i-1], newshortband)
+        else:
+            shortband.iloc[i] = newshortband
+        
+        if RSIndex.iloc[i] > shortband.iloc[i-1]:
+            trend.iloc[i] = 1
+        elif RSIndex.iloc[i] < longband.iloc[i-1]:
+            trend.iloc[i] = -1
+        else:
+            trend.iloc[i] = trend.iloc[i-1]
+    
+    FastAtrRsiTL = pd.Series(
+        [longband.iloc[i] if trend.iloc[i] == 1 else shortband.iloc[i] for i in range(len(df))],
+        index=df.index
+    )
+    
+    # QQE 2
+    RSI_Period2 = 6
+    SF2 = 5
+    QQE2 = 1.61
+    ThreshHold2 = 3
+    
+    Wilders_Period2 = RSI_Period2 * 2 - 1
+    Rsi2 = calc_rsi(close, RSI_Period2)
+    RsiMa2 = Rsi2.ewm(span=SF2, adjust=False).mean()
+    AtrRsi2 = abs(RsiMa2.shift(1) - RsiMa2)
+    MaAtrRsi2 = AtrRsi2.ewm(span=Wilders_Period2, adjust=False).mean()
+    dar2 = MaAtrRsi2.ewm(span=Wilders_Period2, adjust=False).mean() * QQE2
+    
+    # Bollinger Bands on QQE
+    length = 50
+    qqeMult = 0.35
+    basis = (FastAtrRsiTL - 50).rolling(window=length).mean()
+    dev = qqeMult * (FastAtrRsiTL - 50).rolling(window=length).std()
+    upper = basis + dev
+    lower = basis - dev
+    
+    # QQE 2 bands
+    longband2 = pd.Series(0.0, index=df.index)
+    shortband2 = pd.Series(0.0, index=df.index)
+    trend2 = pd.Series(0, index=df.index)
+    
+    RSIndex2 = RsiMa2
+    DeltaFastAtrRsi2 = dar2
+    
+    for i in range(len(df)):
+        if i == 0:
+            continue
+        newshortband2 = RSIndex2.iloc[i] + DeltaFastAtrRsi2.iloc[i]
+        newlongband2 = RSIndex2.iloc[i] - DeltaFastAtrRsi2.iloc[i]
+        
+        if RSIndex2.iloc[i-1] > longband2.iloc[i-1] and RSIndex2.iloc[i] > longband2.iloc[i-1]:
+            longband2.iloc[i] = max(longband2.iloc[i-1], newlongband2)
+        else:
+            longband2.iloc[i] = newlongband2
+            
+        if RSIndex2.iloc[i-1] < shortband2.iloc[i-1] and RSIndex2.iloc[i] < shortband2.iloc[i-1]:
+            shortband2.iloc[i] = min(shortband2.iloc[i-1], newshortband2)
+        else:
+            shortband2.iloc[i] = newshortband2
+        
+        if RSIndex2.iloc[i] > shortband2.iloc[i-1]:
+            trend2.iloc[i] = 1
+        elif RSIndex2.iloc[i] < longband2.iloc[i-1]:
+            trend2.iloc[i] = -1
+        else:
+            trend2.iloc[i] = trend2.iloc[i-1]
+    
+    # QQE signals
+    Greenbar1 = RsiMa2 - 50 > ThreshHold2
+    Greenbar2 = RsiMa - 50 > upper
+    Redbar1 = RsiMa2 - 50 < -ThreshHold2
+    Redbar2 = RsiMa - 50 < lower
+    
+    qqeBuy = (Greenbar1 & Greenbar2) if use_QQE else pd.Series(False, index=df.index)
+    qqeSell = (Redbar1 & Redbar2) if use_QQE else pd.Series(False, index=df.index)
+    
+    # SSL Hybrid
+    maType = 'HMA'
+    sslLen = 60
+    
+    def hma(source, length):
+        wma1 = source.rolling(window=length//2).apply(lambda x: np.dot(x, np.arange(1, len(x)+1))/np.sum(np.arange(1, len(x)+1)), raw=True)
+        wma2 = source.rolling(window=length).apply(lambda x: np.dot(x, np.arange(1, len(x)+1))/np.sum(np.arange(1, len(x)+1)), raw=True)
+        return 2 * wma1 - wma2
+    
+    if maType == 'HMA':
+        sslBaseline = hma(close, sslLen)
+    elif maType == 'EMA':
+        sslBaseline = close.ewm(span=sslLen, adjust=False).mean()
+    else:
+        sslBaseline = close.rolling(window=sslLen).mean()
+    
+    sslUp = sslBaseline > sslBaseline.shift(1)
+    sslDown = sslBaseline < sslBaseline.shift(1)
+    
+    sslBuy = sslUp if use_SSL else pd.Series(False, index=df.index)
+    sslSell = sslDown if use_SSL else pd.Series(False, index=df.index)
+    
+    # Waddah Attar Explosion
+    sensitivity = 150
+    fastLength = 20
+    slowLength = 40
+    channelLength = 20
+    mult = 2.0
+    
+    def calc_macd(source, fast, slow):
+        ema_fast = source.ewm(span=fast, adjust=False).mean()
+        ema_slow = source.ewm(span=slow, adjust=False).mean()
+        return ema_fast - ema_slow
+    
+    def calc_bb_upper(source, length, mult):
+        basis = source.rolling(window=length).mean()
+        std = source.rolling(window=length).std()
+        return basis + mult * std
+    
+    def calc_bb_lower(source, length, mult):
+        basis = source.rolling(window=length).mean()
+        std = source.rolling(window=length).std()
+        return basis - mult * std
+    
+    macd = calc_macd(close, fastLength, slowLength)
+    macd_prev = calc_macd(close.shift(1), fastLength, slowLength)
+    t1 = (macd - macd_prev) * sensitivity
+    e1 = calc_bb_upper(close, channelLength, mult) - calc_bb_lower(close, channelLength, mult)
+    
+    trendUp = t1 >= 0
+    trendDown = t1 < 0
+    
+    waeBuy = (trendUp & (t1 > e1)) if use_WAE else pd.Series(False, index=df.index)
+    waeSell = (trendDown & (abs(t1) > e1)) if use_WAE else pd.Series(False, index=df.index)
+    
+    # Ehlers Two Pole Super Smoother
+    PriceE2PSS = (high + low) / 2
+    PeriodE2PSS = 15
+    inverseE2PSS = False
+    
+    pi = 2 * np.arcsin(1)
+    a1 = np.exp(-1.414 * pi / PeriodE2PSS)
+    b1 = 2 * a1 * np.cos(1.414 * pi / PeriodE2PSS)
+    coef2 = b1
+    coef3 = -a1 * a1
+    coef1 = 1 - coef2 - coef3
+    
+    Filt2 = pd.Series(0.0, index=df.index)
+    TriggerE2PSS = pd.Series(0.0, index=df.index)
+    
+    for i in range(len(df)):
+        if i < 3:
+            Filt2.iloc[i] = PriceE2PSS.iloc[i]
+        else:
+            Filt2.iloc[i] = coef1 * PriceE2PSS.iloc[i] + coef2 * Filt2.iloc[i-1] + coef3 * Filt2.iloc[i-2]
+        TriggerE2PSS.iloc[i] = Filt2.iloc[i-1] if i > 0 else 0
+    
+    signalLongE2PSS = Filt2 > TriggerE2PSS
+    signalShortE2PSS = Filt2 < TriggerE2PSS
+    
+    e2pssBuy = signalLongE2PSS if (use_E2PSS and not inverseE2PSS) else (signalShortE2PSS if use_E2PSS else pd.Series(False, index=df.index))
+    e2pssSell = signalShortE2PSS if (use_E2PSS and not inverseE2PSS) else (signalLongE2PSS if use_E2PSS else pd.Series(False, index=df.index))
+    
+    # Trendilo
+    trendilo_smooth = 1
+    trendilo_length = 50
+    trendilo_offset = 0.85
+    trendilo_sigma = 6
+    trendilo_bmult = 1.0
+    
+    pct_change = close.diff(trendilo_smooth) / close * 100
+    
+    # ALMA implementation
+    def alma(source, length, offset, sigma):
+        m = offset * (length - 1)
+        s = sigma * (length - 1) / 6
+        weights = np.exp(-np.square(np.arange(length) - m) / (2 * np.square(s)))
+        weights = weights / weights.sum()
+        return source.rolling(window=length).apply(lambda x: np.dot(x, weights), raw=True)
+    
+    avg_pct_change = alma(pct_change, trendilo_length, trendilo_offset, trendilo_sigma)
+    rms = trendilo_bmult * np.sqrt((avg_pct_change ** 2).rolling(window=trendilo_length).mean())
+    
+    trendilo_dir = pd.Series(0, index=df.index)
+    trendilo_dir[avg_pct_change > rms] = 1
+    trendilo_dir[avg_pct_change < -rms] = -1
+    
+    trendiloBuy = (trendilo_dir == 1) if use_Trendilo else pd.Series(False, index=df.index)
+    trendiloSell = (trendilo_dir == -1) if use_Trendilo else pd.Series(False, index=df.index)
+    
+    # TTM Squeeze
+    redGreen_TTMS = True
+    highlightMovements_TTMS = True
+    length_TTMS = 20
+    
+    BB_mult_TTMS = 2.0
+    BB_basis_TTMS = close.rolling(window=length_TTMS).mean()
+    dev_TTMS = BB_mult_TTMS * close.rolling(window=length_TTMS).std()
+    BB_upper_TTMS = BB_basis_TTMS + dev_TTMS
+    BB_lower_TTMS = BB_basis_TTMS - dev_TTMS
+    
+    KC_mult_low_TTMS = 2.0
+    KC_basis_TTMS = close.rolling(window=length_TTMS).mean()
+    devKC_TTMS = (high - low).rolling(window=length_TTMS).mean()
+    KC_upper_low_TTMS = KC_basis_TTMS + devKC_TTMS * KC_mult_low_TTMS
+    KC_lower_low_TTMS = KC_basis_TTMS - devKC_TTMS * KC_mult_low_TTMS
+    
+    NoSqz_TTMS = (BB_lower_TTMS < KC_lower_low_TTMS) | (BB_upper_TTMS > KC_upper_low_TTMS)
+    
+    # Momentum calculation
+    highest_high = high.rolling(window=length_TTMS).max()
+    lowest_low = low.rolling(window=length_TTMS).min()
+    avg_price = (highest_high + lowest_low + close.rolling(window=length_TTMS).mean()) / 3
+    momentum_source = close - avg_price
+    
+    # Linear regression
+    def linreg(source, length, offset):
+        indices = np.arange(length)
+        def calc_lr(x):
+            if len(x) < length:
+                return np.nan
+            x_mean = indices.mean()
+            y_mean = x.mean()
+            numerator = np.sum((indices - x_mean) * (x - y_mean))
+            denominator = np.sum((indices - x_mean) ** 2)
+            slope = numerator / denominator
+            intercept = y_mean - slope * x_mean
+            return intercept + slope * offset
+        return pd.Series(index=source.index).fillna(0).astype(float).apply(lambda x: np.nan)
+
+I'm working through the linreg function but it appears incomplete. Let me reconsider the momentum calculation for TTM Squeeze - it needs to compute the linear regression of the price deviation over the specified period. I need to complete the momentum calculation for the TTM squeeze indicator. The momentum is derived from the difference between closing prices and a combined average of the highest high, lowest low, and simple moving average over the lookback period. Once I have the momentum series, I'll apply a linear regression filter across the length_TTMS window to smooth out noise and identify trends. Finally, I'll determine entry signals based on whether the momentum is positive or negative. The momentum calculation completes with the linear regression applied to the price deviation. A squeeze condition is then identified when Bollinger Bands fall inside Keltner Channels, which I'll use to filter entries.
+
+For the entry logic, I need to count how many indicators align for each direction. I'm tracking active buy signals across the QQE, SSL, WAE, Ehlers Two Pole Super Smoothed, Trendilo, and TTM indicators, then tallying the total buy count to determine market alignment. The same approach applies for sell signals across the corresponding bearish indicators.
+
+Depending on the entry mode selected—"All Active" requiring unanimous agreement, "Majority Active" needing more than half, or "Any Active" just needing one—I apply the threshold check to the count of aligned indicators. The date range filter ensures entries only occur between the specified start and end dates, converting the input year, month, and day into a timestamp for comparison.
+
+For the main logic, I'm iterating through each row to find entry signals. When a long entry is triggered by the combined condition and we're within the valid date range, I record the trade details including timestamp, entry price, and trade number. Short entries follow the same pattern, capturing their own timestamp and price information. raw_price_a = raw_price_b = entry_price_guess
+        entries.append(entry)
+        trade_num += 1
+    
+    return entries
+
+I'm reconsidering the Wilder RSI implementation. In Pine Script, `ta.rsi()` uses Wilder's smoothing by default, so I need to ensure the Python version properly replicates this. The key is that `ta.ema(src, len)` in Pine corresponds to `src.ewm(span=len, adjust=False).mean()` in pandas. For RSI specifically, I should verify the calculation matches Pine's approach, which uses exponential weighted moving average with alpha = 1/period for the gain and loss components.
+
+The crossover and crossunder logic also needs careful handling—I need to ensure the comparison between current and previous values works correctly when iterating through the data.
+
+For Ehlers Two Pole SS, the recursive calculation depends on prior values, so I need to make sure the loop processes bars sequentially and handles the shift operations properly. The TTM Squeeze linreg implementation requires attention to how the momentum is calculated relative to the linear regression output.
+
+The momentum formula combines the highest high and lowest low with a simple moving average, then applies linear regression to the resulting series. I should verify the rolling window calculations for the Bollinger Bands and Keltner Channels are using the correct periods and that the True Range is computed properly from the high, low, and previous close values.
+
+For the entry logic, I'm counting how many indicators are active in each direction—QQE, SSL, WAE, E2PSS, Trendilo, and TTM—then applying the entry mode condition: all must be active for "All Active" mode, more than half for "Majority Active", or at least one for "Any Active". The date range filtering comes next.
+
+Now I need to verify the indicator calculations are correct. The QQE's RSI smoothing uses Wilder's Period (11 days), and the ATR of RSI is computed from the absolute difference between consecutive smoothed RSI values, then smoothed again with the same period before multiplying by the QQE factor. The second RSI variant uses a similar approach but with its own parameters. I'm realizing the Pine Script logic has nested ternary operators that need careful parsing. The trend assignment should be: if there's a cross upward (RSIndex crosses above shortband[1]), set trend to 1; otherwise if there's a cross downward (longband[1] crosses below RSIndex), set trend to -1; otherwise keep the previous trend value with a default of 1.
+
+For the QQE and Bollinger Bands combination, the buy signal triggers when both RSI smoothed values are above their thresholds—specifically when RSI2's smoothed value exceeds 50 plus the threshold, and RSI's smoothed value stays above its upper Bollinger Band. The sell signal appears to use a similar structure with the lower band.
+
+I need to be careful about NaN handling when comparing these values, and make sure I'm implementing Wilder's RSI correctly since that's what Pine Script's ta.rsi() uses by default. For the Ehlers Two Pole filter, I should apply proper recursive logic. Once I have all the pieces in place, I can construct the complete Python function that calculates these indicators and generates the entry signals based on the crossovers and threshold conditions.
+
+The function sets up the indicator parameters and calculates Wilder's RSI, then computes the average true range of the RSI values to smooth them further. From there, I can build out the Bollinger Bands and QQE logic to identify potential trade entries.
+
+Now I'm calculating the dynamic bands for the QQE by tracking whether the RSI is trending higher or lower, comparing current values against previous ones to determine the appropriate band levels. When the RSI crosses above the short band, that signals a potential long opportunity. ema2 = ta.ema(AtrRsi2, Wilders_Period2)
+    dar2 = ema2 * QQE2
+    
+    longband2 = 0.0
+    shortband2 = 0.0
+    trend2 = 0
+    
+    for i in range(2, len(df)):
+        newshortband2 = RSIndex2[i] + dar2[i]
+        newlongband2 = RSIndex2[i] - dar2[i]
+        
+        if RSIndex2[i-1] > longband2[i-1] and RSIndex2[i] > longband2[i-1]:
+            longband2[i] = max(longband2[i-1], newlongband2)
+        else:
+            longband2[i] = newlongband2
+        
+        if RSIndex2[i-1] < shortband2[i-1] and RSIndex2[i] < shortband2[i-1]:
+            shortband2[i] = min(shortband2[i-1], newshortband2)
+        else:
+            shortband2[i] = newshortband2
+        
+        if RSIndex2[i] > shortband2[i-1]:
+            trend2[i] = 1
+        elif RSIndex2[i] < longband2[i-1]:
+            trend2[i] = -1
+        else:
+            trend2[i] = trend2[i-1]
+    
+    FastAtrRsiTL2 = np.where(trend2 == 1, longband2, shortband2)
+    
+    # Bollinger Bands
+    length = 50
+    qqeMult = 0.35
+    basis = ta.sma(FastAtrRsiTL - 50, length)
+    dev = qqeMult * ta.stdev(FastAtrRsiTL - 50, length)
+    upper = basis + dev
+    lower = basis - dev
+    
+    # QQE 2 signals
+    Greenbar1 = RsiMa2 - 50 > ThreshHold2
+    Greenbar2 = RsiMa - 50 > upper
+    Redbar1 = RsiMa2 - 50 < 0 - ThreshHold2
+    Redbar2 = RsiMa - 50 < lower
+    
+    qqeBuy = Greenbar1 and Greenbar2
+    qqeSell = Redbar1 and Redbar2
+    
+    # Bollinger Band settings
+    bb_length = 20
+    bb_mult = 2.0
+    
+    # Calculate Bollinger Bands
+    bb_basis = ta.sma(close, bb_length)
+    bb_dev = bb_mult * ta.stdev(close, bb_length)
+    bb_upper = bb_basis + bb_dev
+    bb_lower = bb_basis - bb_dev
+    
+    # Keltner Channel settings
+    kc_length = 20
+    kc_mult = 1.5
+    
+    # Calculate Keltner Channel
+    kc_basis = ta.sma(close, kc_length)
+    kc_tr = ta.tr
+    kc_upper = kc_basis + kc_mult * ta.sma(kc_tr, kc_length)
+    kc_lower = kc_basis - kc_mult * ta.sma(kc_tr, kc_length)
+    
+    # Squeeze detection
+    sqz_on = (bb_lower > kc_lower) and (bb_upper < kc_upper)
+    sqz_off = (bb_lower < kc_lower) and (bb_upper > kc_upper)
+    no_sqz = not sqz_on and not sqz_off
+    
+    # Entry signals
+    long = qqeBuy and no_sqz and (close > bb_basis)
+    short = qqeSell and no_sqz and (close < bb_basis)
+    
+    # Calculate position size
+    risk_amount = strategy.equity * (risk_percent / 100)
+    atr_value = ta.atr(atr_period)
+    position_size = risk_amount / atr_value
+    
+    # Execute trades
+    if long
+        stop_loss = close - (atr_multiplier * atr_value)
+        take_profit = close + (take_profit_multiplier * atr_value)
+        strategy.entry("Long", strategy.long, qty=position_size)
+        strategy.exit("Exit Long", "Long", stop=stop_loss, limit=take_profit)
+    
+    if short
+        stop_loss = close + (atr_multiplier * atr_value)
+        take_profit = close - (take_profit_multiplier * atr_value)
+        strategy.entry("Short", strategy.short, qty=position_size)
+        strategy.exit("Exit Short", "Short", stop=stop_loss, limit=take_profit)

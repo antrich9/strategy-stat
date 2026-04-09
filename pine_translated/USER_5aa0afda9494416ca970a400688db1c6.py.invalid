@@ -1,0 +1,68 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    # --- Strategy parameters (mirroring Pine Script inputs) ---
+    useHullMA = True
+    usecolorHullMA = True
+    lengthHullMA = 9
+    useT3 = True
+    crossT3 = True
+    inverseT3 = False
+    lengthT3 = 5
+    factorT3 = 0.7
+    highlightMovementsT3 = True
+    pinBarSize = 30
+
+    # --- Helper: Weighted Moving Average ---
+    def wma(series: pd.Series, window: int) -> pd.Series:
+        weights = np.arange(1, window + 1)
+        def _wma(x):
+            if isinstance(x, np.ndarray):
+                if np.any(np.isnan(x)):
+                    return np.nan
+                return np.dot(x, weights) / weights.sum()
+            return np.nan
+        return series.rolling(window=window, min_periods=window).apply(_wma, raw=True)
+
+    # --- Hull MA ---
+    half_len = lengthHullMA // 2
+    wma_half = wma(df['close'], half_len)
+    wma_full = wma(df['close'], lengthHullMA)
+    hull_ma = wma(2 * wma_half - wma_full, int(np.floor(np.sqrt(lengthHullMA))))
+    sig_hull = pd.Series(np.where(hull_ma > hull_ma.shift(1), 1, -1), index=df.index)
+
+    # --- T3 indicator ---
+    def ema(series: pd.Series, span: int) -> pd.Series:
+        return series.ewm(span=span, adjust=False).mean()
+
+    def gdT3(src: pd.Series, length: int, factor: float) -> pd.Series:
+        ema1 = ema(src, length)
+        ema2 = ema(ema1, length)
+        return ema1 * (1 + factor) - ema2 * factor
+
+    t3 = gdT3(gdT3(gdT3(df['close'], lengthT3, factorT3), lengthT3, factorT3), lengthT3, factorT3)
+    t3_sign = pd.Series(np.where(t3 > t3.shift(1), 1, -1), index=df.index)
+
+    # --- Pin Bar detection ---
+    body = (df['close'] - df['open']).abs()
+    lower_wick = pd.Series(
+        np.where(df['close'] > df['open'], df['close'] - df['low'], df['open'] - df['low']),
+        index=df.index
+    )
+    upper_wick = pd.Series(
+        np.where(df['close'] > df['open'], df['high'] - df['close'], df['high'] - df['open']),
+        index=df.index
+    )
+    is_bullish_pin = (
+        (df['close'] > df['open']) &
+        (lower_wick > body * pinBarSize / 100) &
+        (lower_wick > upper_wick * 2)
+    ).fillna(False)
+
+    is_bearish_pin = (
+        (df['close'] < df['open']) &
+        (upper_wick > body * pinBarSize / 100) &
+        (upper_wick > lower_wick * 2)
+    ).fillna(False

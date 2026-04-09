@@ -1,0 +1,17 @@
+# Calculate time differences
+   time_diffs = df['time'].diff()
+   median_diff = time_diffs.median()
+   
+   # If median diff < 1 hour, assume it's < 4H and resample
+   if median_diff < 3600:
+       # Resample to 4H
+       htf_df = df.resample('4H', on='time').agg({
+           'open': 'first',
+           'high': 'max',
+           'low': 'min',
+           'close': 'last',
+           'volume': 'sum'
+       }).dropna()
+   else:
+       # Assume it's 4H or higher
+       htf_df = df

@@ -1,0 +1,71 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    # Default parameters matching the Pine script
+    operation_mode = True
+    filter_type = "CON FILTRADO DE TENDENCIA"
+    activate_elephant_candles = True
+    activate_red_elephant_candles = True
+    activate_green_elephant_candles = True
+    min_body_pct = 70
+    atr_period = 100
+    search_factor = 1.3
+    ma_length = 20
+    ma_length_fast = 8
+    ma_reaction = 1
+    ma_reaction_fast = 1
+    bullish_trend_cond = "DIRECCION MEDIA RAPIDA ALCISTA"
+    bearish_trend_cond = "DIRECCION MEDIA RAPIDA BAJISTA"
+
+    close = df['close']
+    open_ = df['open']
+    high = df['high']
+    low = df['low']
+
+    # Elephant candle body and body percentage
+    body = (close - open_).abs()
+    range_ = high - low
+    body_pct = (body * 100.0) / range_.replace(0, np.nan)
+
+    # Green/Red elephant validation
+    is_green = close > open_
+    is_red = close < open_
+    is_green_elephant_valid = is_green & (body_pct >= min_body_pct)
+    is_red_elephant_valid = is_red & (body_pct >= min_body_pct)
+
+    # ATR (Wilder) using ewm with alpha = 1/period
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/atr_period, adjust=False).mean()
+
+    # Strong elephant candles (body >= atr[1] * search_factor)
+    is_green_strong = is_green_elephant_valid & (body >= atr.shift(1) * search_factor)
+    is_red_strong = is_red_elephant_valid & (body >= atr.shift(1) * search_factor)
+
+    # Moving averages (SMA by default)
+    slow_ma = close.rolling(window=ma_length, min_periods=ma_length).mean()
+    fast_ma = close.rolling(window=ma_length_fast, min_periods=ma_length_fast).mean()
+
+    # Trend detection (rising/falling with reaction length = 1)
+    slow_trend = pd.Series(0, index=df.index, dtype=int)
+    for i in range(1, len(df)):
+        if pd.isna(slow_ma.iloc[i]) or pd.isna(slow_ma.iloc[i-1]):
+            slow_trend.iloc[i] = slow_trend.iloc[i-1]
+        else:
+            if slow_ma.iloc[i] > slow_ma.iloc[i-1]:
+                slow_trend.iloc[i] = 1
+            elif slow_ma.iloc[i] < slow_ma.iloc[i-1]:
+                slow_trend.iloc[i] = -1
+            else:
+                slow_trend.iloc[i] = slow_trend.iloc[i-1]
+
+    fast_trend = pd.Series(0, index=df.index, dtype=int)
+    for i in range(1, len(df)):
+        if pd.isna(fast_ma.iloc[i]) or pd.isna(fast_ma.iloc[i-1]):
+            fast_trend.iloc[i] = fast_trend.iloc[i-1]
+        else:
+            if fast_ma.iloc[i] > fast_ma.iloc

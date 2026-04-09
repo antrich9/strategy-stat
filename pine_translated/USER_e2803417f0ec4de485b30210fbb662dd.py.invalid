@@ -1,0 +1,7 @@
+def hma(src, length):
+       # WMA with length n: sum(src * i) / sum(i) for i from 1 to n
+       # Hull MA: WMA(2*WMA(src, n/2) - WMA(src, n), sqrt(n))
+       wma_half = src.rolling(length//2).apply(lambda x: np.dot(x, np.arange(1, len(x)+1)) / (len(x)*(len(x)+1)/2), raw=True)
+       # Actually, rolling apply is slow. Better to use ewming or manual calculation.
+       # Let's use the formula: WMA(src, n) = sum(src[i] * i) / sum(i)
+       # For n=length, weights are 1, 2, ..., length

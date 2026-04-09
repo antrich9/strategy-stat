@@ -1,0 +1,65 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def compute_wilder_atr(df: pd.DataFrame, period: int) -> pd.Series:
+    high = df['high']
+    low = df['low']
+    prev_close = df['close'].shift(1)
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = true_range.ewm(alpha=1.0/period, adjust=False).mean()
+    return atr
+
+def generate_entries(df: pd.DataFrame) -> list:
+    df = df.copy()
+    df['datetime'] = pd.to_datetime(df['time'], unit='s', utc=True)
+    
+    weekly = df.set_index('datetime').copy()
+    weekly = weekly[['open', 'high', 'low', 'close', 'volume']].resample('W-FRI').agg({
+        'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
+    })
+    
+    weekly['week_start'] = weekly.index - weekly.index.freq
+    weekly = weekly.reset_index().rename(columns={'index': 'week_end'})
+    weekly = weekly.set_index('week_start')
+    
+    df['week_start'] = pd.to_datetime(df['time'], unit='s', utc=True).dt.to_period('W-SUN').dt.to_timestamp('W-SUN', how='end').dt.floor('D')
+    
+    week_max = weekly['high'].copy()
+    week_min = weekly['low'].copy()
+    
+    weekly_aligned = pd.DataFrame(index=df.index)
+    weekly_aligned['high'] = df['week_start'].map(week_max)
+    weekly_aligned['low'] = df['week_start'].map(week_min)
+    
+    df['weekly_high'] = weekly_aligned['high']
+    df['weekly_low'] = weekly_aligned['low']
+    
+    df = df.drop(columns=['week_start'])
+    
+    df['prev_week_high'] = df['weekly_high'].shift(1)
+    df['prev_week_low'] = df['weekly_low'].shift(1)
+    df['week2_high'] = df['weekly_high'].shift(2)
+    df['week2_low'] = df['weekly_low'].shift(2)
+    
+    vol_sma9 = df['volume'].rolling(9).mean()
+    df['vol_sma9'] = vol_sma9
+    
+    atr14 = compute_wilder_atr(df, 14)
+    atr20 = compute_wilder_atr(df, 20)
+    df['atr14'] = atr14
+    df['atr20'] = atr20
+    
+    loc = df['close'].rolling(54).mean()
+    df['loc'] = loc
+    
+    high = df['high']
+    low = df['low']
+    prev_high = df['prev_week_high']
+    prev_low = df['prev_week_low']
+    week2_high = df['week2_high']
+    week2_low = df['week2_low']
+    vol_filt = df['volume'] > df['vol

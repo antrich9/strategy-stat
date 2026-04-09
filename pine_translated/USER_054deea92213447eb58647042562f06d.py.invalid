@@ -1,0 +1,56 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    df = df.copy()
+    df['dt'] = pd.to_datetime(df['time'], unit='s', utc=True)
+    df['date'] = df['dt'].dt.date
+
+    daily = df.groupby('date').agg(
+        daily_high=('high', 'max'),
+        daily_low=('low', 'min')
+    ).reset_index()
+
+    daily['prev_day_high'] = daily['daily_high'].shift(1)
+    daily['prev_day_low'] = daily['daily_low'].shift(1)
+
+    df = df.merge(daily[['date', 'prev_day_high', 'prev_day_low']], on='date', how='left')
+
+    df['prev_day_high_taken'] = df['high'] > df['prev_day_high']
+    df['prev_day_low_taken'] = df['low'] < df['prev_day_low']
+
+    df['flagpdh'] = df['prev_day_high_taken'] & (df['low'] > df['prev_day_low'])
+    df['flagpdl'] = df['prev_day_low_taken'] & (df['high'] < df['prev_day_high'])
+
+    df['minute_of_day'] = df['dt'].dt.hour * 60 + df['dt'].dt.minute
+    morning_start = 8 * 60
+    morning_end = 9 * 60 + 45
+    afternoon_start = 16 * 60
+    afternoon_end = 16 * 60 + 45
+    df['isWithinTimeWindow'] = (
+        ((df['minute_of_day'] >= morning_start) & (df['minute_of_day'] <= morning_end)) |
+        ((df['minute_of_day'] >= afternoon_start) & (df['minute_of_day'] <= afternoon_end))
+    )
+
+    df['long_entry'] = df['flagpdh'] & df['isWithinTimeWindow']
+    df['short_entry'] = df['flagpdl'] & df['isWithinTimeWindow']
+
+    valid_df = df.dropna(subset=['prev_day_high', 'prev_day_low'])
+
+    entries = []
+    trade_num = 1
+
+    for idx, row in valid_df.iterrows():
+        if row['long_entry

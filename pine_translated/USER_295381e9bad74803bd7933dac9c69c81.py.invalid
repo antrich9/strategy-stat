@@ -1,0 +1,4 @@
+def pivothigh(series, left, right):
+    # For each bar, check if it's the max in the window [i-left, i+right]
+    result = series.rolling(left+right+1, center=True).max()
+    return result

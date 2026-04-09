@@ -1,0 +1,3 @@
+window = 2 * PP + 1
+highs = df['high'].rolling(window=window, center=True).max()
+pivot_high_mask = (df['high'] == highs) & (df['high'].shift(PP) == df['high'])

@@ -1,0 +1,6 @@
+tr = (high - low).copy()
+tr.iloc[1:] = np.maximum(
+    (high - low).iloc[1:],
+    np.abs(high.iloc[1:] - close.shift(1).iloc[1:]),
+    np.abs(low.iloc[1:] - close.shift(1).iloc[1:])
+)

@@ -1,0 +1,3 @@
+# Pivot low: lowest low over 2*bb+1 bars centered at pivot point
+# Pine: ta.pivotlow(low, bb, bb) - returns the low value at the pivot point
+# The pivot point is at bar_index - bb

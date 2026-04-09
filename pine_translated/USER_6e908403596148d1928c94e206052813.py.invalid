@@ -1,0 +1,6 @@
+tr = pd.DataFrame()
+tr['high_low'] = df['high'] - df['low']
+tr['high_close'] = abs(df['high'] - df['close'].shift())
+tr['low_close'] = abs(df['low'] - df['close'].shift())
+tr['true_range'] = tr[['high_low', 'high_close', 'low_close']].max(axis=1)
+atr = tr['true_range'].ewm(alpha=1/14, adjust=False).mean()

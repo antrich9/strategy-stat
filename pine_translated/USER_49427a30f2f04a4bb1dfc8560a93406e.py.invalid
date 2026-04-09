@@ -1,0 +1,130 @@
+import pandas as pd
+ import numpy as np
+ from datetime import datetime, timezone
+
+ def generate_entries(df: pd.DataFrame) -> list:
+     # Parameters
+     bb = 20  # lookback
+     input_retSince = 2
+     input_retValid = 2
+     tradeDirection = "Both"  # Can be "Long", "Short", "Both"
+     
+     longCondition = tradeDirection == "Long" or tradeDirection == "Both"
+     shortCondition = tradeDirection == "Short" or tradeDirection == "Both"
+     
+     # Initialize columns for intermediate values
+     # Pivot points
+     pl = df['low'].rolling(window=bb*2+1, center=True).min()
+     ph = df['high'].rolling(window=bb*2+1, center=True).max()
+     
+     # Actually, pivotlow in Pine is not exactly rolling min. It's specific.
+     # ta.pivotlow(source, leftBars, rightBars) returns the value of source 
+     # at the pivot point if it's a pivot low, else NaN.
+     # A pivot low is when source[leftBars] < source[leftBars-1] and 
+     # source[leftBars] < source[leftBars+1] ... for rightBars as well.
+     
+     # For simplicity, I'll mark pivot lows and highs
+     # A pivot low at position i is when low[i] is the minimum in the window [i-bb, i+bb]
+     
+     pl_vals = df['low'].rolling(window=bb*2+1, center=True).min()
+     ph_vals = df['high'].rolling(window=bb*2+1, center=True).max()
+     
+     is_pl = df['low'] == pl_vals
+     is_ph = df['high'] == ph_vals
+     
+     # But we need to shift this because pivot is confirmed after rightBars
+     # In Pine, pl[bb] is valid when the bar is confirmed
+     # For Python, let's assume we calculate at the bar where it's confirmed
+     
+     # Actually, let's keep it simple and use a different approach
+     # We'll calculate the levels dynamically as we iterate
+     
+     entries = []
+     trade_num = 1
+     
+     # State variables (like var in Pine)
+     sBreak = False
+     rBreak = False
+     sTop = np.nan
+     sBot = np.nan
+     rTop = np.nan
+     rBot = np.nan
+     prev_pl = np.nan
+     prev_ph = np.nan
+     
+     # For tracking retest validity
+     # In Pine, retestEvent checks barssince(retEvent) > 0 and <= input_retValid
+     
+     for i in range(len(df)):
+         # Update pivot levels if changed
+         # In Pine: fixnan(ta.pivotlow(low, bb, bb))
+         # This means pivot low is the lowest in the last 2*bb+1 bars ending at current bar?
+         # No, ta.pivotlow(low, bb, bb) looks for a pivot low with bb bars left and bb bars right.
+         # The result is available at the bar where the right side is complete.
+         
+         # Let's calculate current pivot low/high candidates
+         # A pivot low at bar i is the lowest in window [i-bb, i+bb]
+         # But we can only know this at i+bb
+         
+         # For a proper implementation, I should look back, but for signal generation
+         # at bar i, I should use values from bb bars ago
+         
+         # Let's assume we use the values from bb bars ago
+         if i >= bb:
+             # Check if current bar is a pivot point (looking back bb bars)
+             window_low = df['low'].iloc[max(0, i-bb*2):i+1].min()
+             window_high = df['high'].iloc[max(0, i-bb*2):i+1].max()
+             
+             # Current pivot candidate is at position i-bb
+             if i - bb >= 0:
+                 pivot_idx = i - bb
+                 # Check if this was the lowest/highest in the window
+                 if df['low'].iloc[pivot_idx] == window_low:
+                     # New pivot low
+                     current_pl = df['low'].iloc[pivot_idx]
+                     if not np.isnan(prev_pl) and current_pl != prev_pl:
+                         # Pivot changed, reset breakout flag
+                         if np.isnan(sBreak) or not sBreak:
+                             pass  # Box would be deleted
+                         sBreak = False
+                     prev_pl = current_pl
+                     # Calculate s_yLoc
+                     if pivot_idx - 1 >= 0 and pivot_idx + 1 < len(df):
+                         if df['low'].iloc[pivot_idx + 1] > df['low'].iloc[pivot_idx - 1]:
+                             s_yLoc_val = df['low'].iloc[pivot_idx - 1]
+                         else:
+                             s_yLoc_val = df['low'].iloc[pivot_idx + 1]
+                         sTop = s_yLoc_val
+                         sBot = current_pl
+                 
+                 if df['high'].iloc[pivot_idx] == window_high:
+                     # New pivot high
+                     current_ph = df['high'].iloc[pivot_idx]
+                     if not np.isnan(prev_ph) and current_ph != prev_ph:
+                         if np.isnan(rBreak) or not rBreak:
+                             pass
+                         rBreak = False
+                     prev_ph = current_ph
+                     if pivot_idx - 1 >= 0 and pivot_idx + 1 < len(df):
+                         if df['high'].iloc[pivot_idx + 1] > df['high'].iloc[pivot_idx - 1]:
+                             r_yLoc_val = df['high'].iloc[pivot_idx + 1]
+                         else:
+                             r_yLoc_val = df['high'].iloc[pivot_idx - 1]
+                         rTop = current_ph
+                         rBot = r_yLoc_val
+         
+         # Wait, this is getting very complicated. Let me simplify.
+         
+         # Actually, looking at the Pine code again, the key entry signals are:
+         # - sRetValid for long
+         # - rRetValid for short
+         # These are generated by the retestEvent function.
+         
+         # The retestEvent function essentially:
+         # 1. Waits for breakout (sBreak/rBreak)
+         # 2. Waits input_retSince bars
+         # 3. Checks if price touches the box in a specific way
+         # 4. Confirms if it's within input_retValid bars
+         
+         # For a working Python version, I'll implement a simplified version
+         # that captures the essence.

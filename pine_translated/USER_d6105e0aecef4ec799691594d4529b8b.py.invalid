@@ -1,0 +1,8 @@
+import datetime
+class LondonTz(datetime.tzinfo):
+    def utcoffset(self, dt):
+        if dt is None:
+            return None
+        # London DST: last Sunday of March to last Sunday of October
+        # but we can compute rule
+        ...

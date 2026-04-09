@@ -1,0 +1,134 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def _wilder_smooth(series: pd.Series, period: int) -> pd.Series:
+    """Wilder smoothing (exponential weighted moving average)"""
+    return series.ewm(alpha=1/period, adjust=False).mean()
+
+def _wilder_rsi(prices: pd.Series, period: int) -> pd.Series:
+    """Wilder's RSI calculation"""
+    delta = prices.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = (-delta).where(delta < 0, 0.0)
+    avg_gain = _wilder_smooth(gain, period)
+    avg_loss = _wilder_smooth(loss, period)
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    return 100 - (100 / (1 + rs))
+
+def _wilder_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int) -> pd.Series:
+    """Wilder's ATR calculation"""
+    tr1 = high - low
+    tr2 = abs(high - close.shift(1))
+    tr3 = abs(low - close.shift(1))
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    return _wilder_smooth(tr, period)
+
+def _resample_4h(df: pd.DataFrame) -> pd.DataFrame:
+    """Resample to 4H bars"""
+    df = df.copy()
+    df['ts_4h'] = pd.to_datetime(df['time'], unit='s', utc=True).dt.floor('4h')
+    return df.groupby('ts_4h').agg(
+        high=('high', 'max'),
+        low=('low', 'min'),
+        close=('close', 'last'),
+        volume=('volume', 'sum')
+    ).reset_index()
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    if len(df) < 3:
+        return []
+
+    # Resample to 4H
+    df_4h = _resample_4h(df)
+
+    # Calculate previous day high/low
+    df['datetime'] = pd.to_datetime(df['time'], unit='s', utc=True)
+    df['date'] = df['datetime'].dt.date
+    prev_day_hl = df.groupby('date')['high'].max().shift(1)
+    df['pdh'] = df['date'].map(prev_day_hl)
+    df['pdl'] = df['date'].map(df.groupby('date')['low'].min().shift(1))
+
+    # Calculate 4H indicators
+    df_4h['atr'] = _wilder_atr(df_4h['high'], df_4h['low'], df_4h['close'], 20) / 1.5
+    df_4h['vol_sma'] = df_4h['volume'].rolling(9).mean()
+    df_4h['loc'] = df_4h['close'].rolling(54).mean()
+    df_4h['loc_trend'] = df_4h['loc'] > df_4h['loc'].shift(1)
+
+    # Bullish FVG: low > high from 2 bars back
+    df_4h['bull_fvg'] = (df_4h['low'] > df_4h['high'].shift(2)) & \
+                        (df_4h['volume'].shift(1) > df_4h['vol_sma'] * 1.5) & \
+                        (df_4h['atr'] > 0) & \
+                        df_4h['loc_trend']
+
+    # Bearish FVG: high < low from 2 bars back
+    df_4h['bear_fvg'] = (df_4h['high'] < df_4h['low'].shift(2)) & \
+                        (df_4h['volume'].shift(1) > df_4h['vol_sma'] * 1.5) & \
+                        (df_4h['atr'] > 0) & \
+                        (~df_4h['loc_trend'])
+
+    # Detect new 4H candles
+    df_4h['new_4h'] = True  # Mark all 4H bars as potential entry points
+
+    # Bias tracking variables
+    bias = 0  # 0: neutral, 1: bullish, -1: bearish
+    last_fvg_type = 0  # 0: none, 1: bullish, -1: bearish
+    trade_num = 0
+    entries = []
+
+    for i in range(2, len(df_4h)):
+        row = df_4h.iloc[i]
+
+        # Update bias based on FVG signals
+        if row['bull_fvg']:
+            if last_fvg_type == -1:  # Sharp turn bullish
+                bias = 1
+                last_fvg_type = 1
+            elif last_fvg_type == 0:
+                bias = 1
+                last_fvg_type = 1
+        elif row['bear_fvg']:
+            if last_fvg_type == 1:  # Sharp turn bearish
+                bias = -1
+                last_fvg_type = -1
+            elif last_fvg_type == 0:
+                bias = -1
+                last_fvg_type = -1
+
+        # Generate entries based on bias changes
+        if df_4h.iloc[i]['new_4h']:
+            if bias == 1:
+                trade_num += 1
+                entries.append({
+                    'trade_num': trade_num,
+                    'direction': 'long',
+                    'entry_ts': int(df_4h.iloc[i]['time']),
+                    'entry_price': df_4h.iloc[i]['close']
+                })
+            elif bias == -1:
+                trade_num += 1
+                entries.append({
+                    'trade_num': trade_num,
+                    'direction': 'short',
+                    'entry_ts': int(df_4h.iloc[i]['time']),
+                    'entry_price': df_4h.iloc[i]['close']
+                })
+
+    return entries
+
+I'm reconsidering the approach here. The Pine Script uses `var` declarations for persistent state variables that carry values across bars, which means I need to maintain state as I iterate through the dataframe rather than treating each bar independently. I should also verify whether the strategy actually generates trade entries or if it's purely visual. Looking at the code, there's bias tracking with bullish and bearish signals, along with bullish FVG detection that could potentially trigger entries when certain conditions align. not bearish)
+
+I need to add 4H resampling and handle the shift operations correctly. The bull_fvg and bear_fvg conditions require proper indexing across the 4H timeframe. Then I'll check for sharp turns by comparing the current FVG direction to the previous one, and only enter when the bias aligns with the FVG direction—bullish bias with bull_fvg, or bearish bias with bear_fvg. The ATR filter condition `((low_4h1 - high_4h1[2] > atr_4h1) or (low_4h1[2] - high_4h1 > atr_4h1))` is interesting—it identifies large gaps between candles. The bull_fvg condition `low_4h1 > high_4h1[2]` combined with the ATR filter ensures the gap exceeds a threshold, suggesting a strong momentum move rather than just noise.
+
+I need to implement the bias logic where sweeping above or below the previous day's high/low sets the directional bias, then confirm entries when price breaks back through those levels. After that, I'll handle 4H resampling, calculate the necessary indicators, detect the FVGs, and finally generate the trade signals.

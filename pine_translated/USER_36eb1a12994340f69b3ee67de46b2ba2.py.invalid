@@ -1,0 +1,2 @@
+ts = pd.to_datetime(df['time'], unit='s', utc=True)
+ts_london = ts.tz_convert('Europe/London')

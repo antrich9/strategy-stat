@@ -1,0 +1,109 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime, timezone
+
+def generate_entries(df: pd.DataFrame) -> list:
+    """
+    df columns: time(int unix ts), open(float), high(float), low(float), close(float), volume(float)
+    Rows sorted ascending by time (oldest first). Index is 0-based int.
+
+    Returns list of dicts:
+    [{'trade_num': int, 'direction': 'long' or 'short',
+      'entry_ts': int, 'entry_time': str,
+      'entry_price_guess': float,
+      'exit_ts': 0, 'exit_time': '', 'exit_price_guess': 0.0,
+      'raw_price_a': float, 'raw_price_b': float}]
+    """
+    
+    # Extract price data
+    high = df['high']
+    low = df['low']
+    open_prices = df['open']
+    close_prices = df['close']
+    volume = df['volume']
+    time_col = df['time']
+    
+    # Initialize session tracking variables
+    asiaHigh = None
+    asiaLow = None
+    inSession = pd.Series(False, index=df.index)
+    
+    # Convert time to datetime for session detection
+    times = pd.to_datetime(time_col, unit='s', utc=True)
+    hours = times.dt.hour
+    minutes = times.dt.minute
+    
+    # Session time: 2300
+
+-0700 London time
+    # In UTC, this is roughly 2200-0600 (or 2300-0700 depending on DST)
+    # For simplicity, we'll check hour >= 22 or hour < 6
+    inSession = ((hours >= 22) & (hours < 23)) | ((hours >= 0) & (hours < 6))
+    
+    # Detect session changes
+    inSession_prev = inSession.shift(1).fillna(False)
+    newSession = inSession & ~inSession_prev
+    sessionEnd = ~inSession & inSession_prev
+    
+    # Calculate Asian session high/low
+    asiaHigh_arr = np.zeros(len(df))
+    asiaLow_arr = np.zeros(len(df))
+    
+    current_asiaHigh = np.nan
+    current_asiaLow = np.nan
+    
+    for i in range(len(df)):
+        if newSession.iloc[i]:
+            current_asiaHigh = high.iloc[i]
+            current_asiaLow = low.iloc[i]
+        elif inSession.iloc[i]:
+            current_asiaHigh = max(current_asiaHigh, high.iloc[i])
+            current_asiaLow = min(current_asiaLow, low.iloc[i])
+        
+        asiaHigh_arr[i] = current_asiaHigh
+        asiaLow_arr[i] = current_asiaLow
+    
+    asiaHigh = pd.Series(asiaHigh_arr, index=df.index)
+    asiaLow = pd.Series(asiaLow_arr, index=df.index)
+    
+    # Check if Asian session high/low has been swept
+    asiahighSwept = high > asiaHigh
+    asialowSwept = low < asiaLow
+    
+    # OB and FVG conditions
+    def isUp(idx): return close_prices.iloc[idx] > open_prices.iloc[idx]
+    def isDown(idx): return close_prices.iloc[idx] < open_prices.iloc[idx]
+
+I'm tracking the Asian session high and low values by iterating through the data and updating them whenever a new session starts or I'm currently within one. Then I'm identifying when the price sweeps above the Asian high or below the Asian low, which signals a potential breakout. I'm also setting up helper functions to determine if a candle is bullish or bearish based on whether the close is above or below the open. asiaHigh_arr[i] = current_asiaHigh
+            asiaLow_arr[i] = current_asiaLow
+        elif inSession.iloc[i]:
+            current_asiaHigh = max(current_asiaHigh, high.iloc[i])
+            current_asiaLow = min(current_asiaLow, low.iloc[i])
+            asiaHigh_arr[i] = current_asiaHigh
+            asiaLow_arr[i] = current_asiaLow
+        else:
+            asiaHigh_arr[i] = np.nan
+            asiaLow_arr[i] = np.nan
+    
+    asiaHigh = pd.Series(asiaHigh_arr, index=df.index)
+    asiaLow = pd.Series(asiaLow_arr, index=df.index)
+    
+    asiahighSwept = high > asiaHigh
+    asialowSwept = low < asiaLow
+
+The FVG detection functions are now wrapped as methods within the class, allowing them to access the price data directly. Session boundaries are identified by tracking when the inSession state changes, and the Asian high/low values are computed by accumulating max/min values during active sessions. The arrays are then converted to pandas Series for consistency, and sweep conditions are evaluated by comparing current highs and lows against the established session ranges. (span=9, adjust=False).mean()
+    loc = close_prices.ewm(span=54, adjust=False).mean()
+    loc2 = loc > loc.shift(1)
+    
+    bfvg = (low > high.shift(2)) & volfilt & atrfilt & (inp3 & loc2).astype(bool) | (~inp3)
+    sfvg = (high < low.shift(2)) & volfilt & atrfilt & ((~inp3) & ~loc2).astype(bool) | (inp3 & ~((~inp3) & ~loc2))
+    
+    # Actually let me simplify this
+    bfvg = (low > high.shift(2)) & volfilt & atrfilt
+    sfvg = (high < low.shift(2)) & volfilt & atrfilt
+    
+    if inp3:
+        bfvg = bfvg & loc2
+        sfvg = sfvg & ~loc2
+
+I need to clarify the logic here. The `inp3` parameter acts as a switch—when enabled, it restricts bullish FVGs to uptrends and bearish FVGs to downtrends. When disabled, the trend filter shouldn't apply at all, so I should use a simpler conditional approach rather than trying to encode this directly in the boolean expression. The simplest approach is to compute the base FVG conditions first, then conditionally apply trend filtering if inp3 is enabled:

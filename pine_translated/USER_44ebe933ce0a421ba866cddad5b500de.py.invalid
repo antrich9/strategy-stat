@@ -1,0 +1,4 @@
+diff = close.diff()
+pm = diff.clip(lower=0)
+mm = (-diff).clip(lower=0)
+cmo = (pm.rolling(cmoLength).sum() - mm.rolling(cmoLength).sum()) / (pm.rolling(cmoLength).sum() + mm.rolling(cmoLength).sum()) * 100
