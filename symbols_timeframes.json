@@ -1,0 +1,10 @@
+{
+  "symbols": [
+    "FX:GBPUSD",
+    "BINANCE:BTCUSDT",
+    "FX:XAUUSD",
+    "FX:US30",
+    "FX:GER40"
+  ],
+  "timeframes": ["15", "60", "240", "D"]
+}

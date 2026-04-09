@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Strategy Ranker</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f1117; color: #e0e0e0; min-height: 100vh; }
+  header { background: #1a1d27; border-bottom: 1px solid #2a2d3a; padding: 16px 24px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  h1 { font-size: 18px; font-weight: 600; color: #f0f0f0; }
+  .tag { background: #2a2d3a; color: #888; font-size: 11px; padding: 3px 8px; border-radius: 4px; }
+  .controls { display: flex; gap: 12px; padding: 16px 24px; background: #16181f; flex-wrap: wrap; align-items: center; }
+  .filter-group { display: flex; align-items: center; gap: 6px; }
+  label { font-size: 12px; color: #888; }
+  select, input { background: #1e2029; border: 1px solid #2a2d3a; color: #e0e0e0; padding: 6px 10px; border-radius: 6px; font-size: 13px; }
+  input[type="number"] { width: 80px; }
+  button { background: #3b82f6; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; }
+  button:hover { background: #2563eb; }
+  button.active { background: #1d4ed8; }
+  .stats { padding: 12px 24px; background: #16181f; border-bottom: 1px solid #2a2d3a; font-size: 12px; color: #666; }
+  .stats span { color: #888; }
+  table { width: 100%; border-collapse: collapse; }
+  th { position: sticky; top: 0; background: #1a1d27; text-align: left; padding: 10px 16px; font-size: 11px; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #2a2d3a; cursor: pointer; user-select: none; }
+  th:hover { color: #999; }
+  th.sorted { color: #3b82f6; }
+  td { padding: 10px 16px; font-size: 13px; border-bottom: 1px solid #1e2029; vertical-align: middle; }
+  tr:hover td { background: #1a1d27; }
+  tr.good td { border-bottom-color: #1a2a1a; }
+  tr.good:hover td { background: #1a251a; }
+  .rank { color: #444; font-size: 11px; width: 40px; text-align: center; }
+  .name { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wr { font-weight: 600; }
+  .wr.high { color: #22c55e; }
+  .wr.mid { color: #eab308; }
+  .wr.low { color: #ef4444; }
+  .pf { font-weight: 600; color: #22c55e; }
+  .trades { color: #666; font-size: 12px; }
+  .symbol { font-size: 11px; padding: 2px 6px; border-radius: 4px; background: #2a2d3a; color: #888; }
+  .tf { font-size: 10px; padding: 2px 5px; border-radius: 3px; background: #1e2029; color: #555; }
+  .reach { font-size: 11px; color: #555; }
+  .dd { color: #ef4444; font-size: 12px; }
+  #loading { text-align: center; padding: 60px; color: #444; }
+  #no-data { text-align: center; padding: 60px; color: #444; }
+  .container { max-width: 1400px; margin: 0 auto; }
+  .badge { display: inline-block; font-size: 10px; padding: 2px 6px; border-radius: 3px; background: #1e2029; color: #444; }
+</style>
+</head>
+<body>
+<div class="container">
+<header>
+  <h1>📊 Strategy Ranker</h1>
+  <span class="tag" id="total-tag">Loading...</span>
+</header>
+
+<div class="controls">
+  <div class="filter-group">
+    <label>Symbol</label>
+    <select id="sym-filter">
+      <option value="">All</option>
+      <option value="FX:GBPUSD">FX:GBPUSD</option>
+      <option value="BINANCE:BTCUSDT">BINANCE:BTCUSDT</option>
+      <option value="FX:XAUUSD">FX:XAUUSD</option>
+      <option value="FX:US30">FX:US30</option>
+      <option value="FX:GER40">FX:GER40</option>
+    </select>
+  </div>
+  <div class="filter-group">
+    <label>Timeframe</label>
+    <select id="tf-filter">
+      <option value="">All</option>
+      <option value="15">15m</option>
+      <option value="60">1H</option>
+      <option value="240">4H</option>
+      <option value="D">Daily</option>
+    </select>
+  </div>
+  <div class="filter-group">
+    <label>Min Trades</label>
+    <input type="number" id="min-trades" value="10" min="1" max="10000">
+  </div>
+  <div class="filter-group">
+    <label>Sort</label>
+    <select id="sort-by">
+      <option value="score">Combined Score</option>
+      <option value="wr">Win Rate</option>
+      <option value="pf">Profit Factor</option>
+      <option value="trades">Trades (desc)</option>
+      <option value="name">Name (A-Z)</option>
+    </select>
+  </div>
+  <button id="apply-btn">Apply Filters</button>
+  <button id="reset-btn">Reset</button>
+</div>
+
+<div class="stats" id="stats-bar"></div>
+
+<div style="overflow-x:auto; max-height: calc(100vh - 200px); overflow-y: auto;">
+<table id="table">
+  <thead id="thead"></thead>
+  <tbody id="tbody"></tbody>
+</table>
+</div>
+</div>
+
+<script>
+let allData = [];
+let filtered = [];
+
+const SYMBOL_COLORS = {
+  'FX:GBPUSD': '#22c55e',
+  'BINANCE:BTCUSDT': '#f0b90b',
+  'FX:XAUUSD': '#eab308',
+  'FX:US30': '#3b82f6',
+  'FX:GER40': '#8b5cf6'
+};
+
+function score(row) {
+  const wr = parseFloat(row.win_rate) || 0;
+  const pf = parseFloat(row.profit_factor) || 0;
+  const trades = parseInt(row.trades) || 0;
+  if (trades < 5) return 0;
+  return wr * pf;
+}
+
+function wrClass(wr) {
+  const n = parseFloat(wr) || 0;
+  if (n >= 45) return 'high';
+  if (n >= 38) return 'mid';
+  return 'low';
+}
+
+async function loadCSV() {
+  const resp = await fetch('strategy_stats.csv');
+  const text = await resp.text();
+  const lines = text.trim().split('\n');
+  const headers = lines[0].split(',');
+  allData = lines.slice(1).map(line => {
+    const vals = line.split(',');
+    const row = {};
+    headers.forEach((h, i) => row[h.trim()] = (vals[i] || '').trim();
+    return row;
+  }).filter(r => r.strategy_name && r.symbol && r.timeframe);
+  
+  document.getElementById('total-tag').textContent = `${allData.length.toLocaleString()} combos, ${new Set(allData.map(r=>r.strategy_name)).size} strategies`;
+  applyFilters();
+}
+
+function applyFilters() {
+  const sym = document.getElementById('sym-filter').value;
+  const tf = document.getElementById('tf-filter').value;
+  const minT = parseInt(document.getElementById('min-trades').value) || 1;
+  const sort = document.getElementById('sort-by').value;
+
+  filtered = allData.filter(r => {
+    if (sym && r.symbol !== sym) return false;
+    if (tf && r.timeframe !== tf) return false;
+    const trades = parseInt(r.trades) || 0;
+    if (trades < minT) return false;
+    return true;
+  });
+
+  if (sort === 'score') {
+    filtered.sort((a, b) => score(b) - score(a));
+  } else if (sort === 'wr') {
+    filtered.sort((a, b) => parseFloat(b.win_rate) - parseFloat(a.win_rate));
+  } else if (sort === 'pf') {
+    filtered.sort((a, b) => parseFloat(b.profit_factor) - parseFloat(a.profit_factor));
+  } else if (sort === 'trades') {
+    filtered.sort((a, b) => parseInt(b.trades) - parseInt(a.trades));
+  } else {
+    filtered.sort((a, b) => a.strategy_name.localeCompare(b.strategy_name));
+  }
+
+  renderTable();
+  updateStats();
+}
+
+function renderTable() {
+  const thead = document.getElementById('thead');
+  const tbody = document.getElementById('tbody');
+  
+  thead.innerHTML = `<tr>
+    <th>#</th>
+    <th>Strategy</th>
+    <th>Symbol</th>
+    <th>TF</th>
+    <th class="sorted">WR %</th>
+    <th>PF</th>
+    <th>Max DD</th>
+    <th>Trades</th>
+    <th>1R</th>
+    <th>2R</th>
+    <th>3R</th>
+    <th>Score</th>
+  </tr>`;
+
+  tbody.innerHTML = filtered.slice(0, 500).map((r, i) => {
+    const wr = parseFloat(r.win_rate) || 0;
+    const pf = parseFloat(r.profit_factor) || 0;
+    const trades = parseInt(r.trades) || 0;
+    const dd = parseFloat(r.max_drawdown) || 0;
+    const r1 = parseInt(r.reach_1r_count) || 0;
+    const r2 = parseInt(r.reach_2r_count) || 0;
+    const r3 = parseInt(r.reach_3r_count) || 0;
+    const sc = score(r);
+    const symColor = SYMBOL_COLORS[r.symbol] || '#888';
+    const isGood = wr >= 40 && pf >= 1.5 && trades >= 30;
+
+    return `<tr class="${isGood ? 'good' : ''}">
+      <td class="rank">${i+1}</td>
+      <td class="name" title="${r.strategy_name}">${r.strategy_name}</td>
+      <td><span class="symbol" style="color:${symColor};border-color:${symColor}40">${r.symbol}</span></td>
+      <td><span class="tf">${r.timeframe}</span></td>
+      <td class="wr ${wrClass(r.win_rate)}">${wr.toFixed(1)}%</td>
+      <td class="pf">${pf.toFixed(2)}</td>
+      <td class="dd">${dd.toFixed(1)}</td>
+      <td class="trades">${trades}</td>
+      <td class="reach">${r1}</td>
+      <td class="reach">${r2}</td>
+      <td class="reach">${r3}</td>
+      <td style="color:#666;font-size:11px">${sc.toFixed(1)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function updateStats() {
+  const good = filtered.filter(r => parseFloat(r.win_rate) >= 40 && parseFloat(r.profit_factor) >= 1.5 && parseInt(r.trades) >= 30);
+  document.getElementById('stats-bar').innerHTML =
+    `<span>${filtered.length.toLocaleString()} combos</span> &nbsp;|&nbsp; ` +
+    `<span>${filtered.length ? new Set(filtered.map(r=>r.strategy_name)).size : 0} strategies</span> &nbsp;|&nbsp; ` +
+    `<span>${good.length} strong (WR≥40% & PF≥1.5 & 30+ trades)</span>`;
+}
+
+document.getElementById('apply-btn').addEventListener('click', applyFilters);
+document.getElementById('reset-btn').addEventListener('click', () => {
+  document.getElementById('sym-filter').value = '';
+  document.getElementById('tf-filter').value = '';
+  document.getElementById('min-trades').value = 10;
+  applyFilters();
+});
+document.getElementById('min-trades').addEventListener('keydown', e => { if (e.key === 'Enter') applyFilters(); });
+document.getElementById('sort-by').addEventListener('change', applyFilters);
+
+loadCSV();
+</script>
+</body>
+</html>
