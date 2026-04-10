@@ -1,0 +1,143 @@
+// SPDX-License-Identifier: MIT
+// BTCUSDT 4H Strategy — FVG + HTF Trend + ATR R-Multiple
+// Combines: HTF EMA bias + 4H FVG entry + ATR stop + trailing R structure
+// Timeframe: 4H chart, will use 1H for FVG confirmation, Daily for trend bias
+//@version=5
+
+strategy("BTC 4H FVG+HTF Strategy", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_size=10, commission_value=0.075, slippage=1)
+
+// ─── CONFIGURABLE INPUTS ────────────────────────────────────────────────────
+atrLen     = input.int(14,   "ATR Length",         group="Risk")
+atrMulti   = input.float(2.0, "ATR Multiple (stop)", group="Risk", step=0.25)
+rrTarget   = input.float(3.0, "R-Multiple TP",    group="Risk", step=0.5)
+trActivate = input.float(1.0, "Trailing Activation (R)", group="Risk", step=0.25)
+
+emaFast   = input.int(8,   "EMA Fast",   group="Trend")
+emaSlow   = input.int(24,  "EMA Slow",   group="Trend")
+emaHTF    = input.int(50,  "HTF EMA (bias)", group="Trend")
+
+htfRes    = input.string("240", "HTF EMA Resolution", options=["60","240","D","W"], group="Trend")
+
+fvgLookbk = input.int(3,   "FVG Lookback Bars", group="FVG")
+fvgThreshold = input.float(0.5, "FVG Min Size (ATR %)", group="FVG", step=0.1) / 100
+
+sessionFilter = input.bool(true, "Session Filter (EU/US only)", group="Session")
+useVolume    = input.bool(true, "Volume Confirmation", group="Session")
+volMulti     = input.float(1.5, "Volume vs 20-bar MA", group="Session", step=0.1)
+
+// ─── HELPER FUNCTIONS ───────────────────────────────────────────────────────
+getTA(bars, idx, field) =>
+    ta.valuewhen(na(bars[idx]) == false, bars[idx], 0)
+
+// ─── DATA FETCHING ──────────────────────────────────────────────────────────
+closeHTF  = request.security(syminfo.root, htfRes, close, lookahead=barmerge.lookahead_on)
+emaHTFVal = ta.ema(closeHTF, emaHTF)
+
+// 1H data for FVG detection (within 4H bar)
+ema1H = ta.ema(close, emaFast)
+sma1H = ta.ema(close, emaSlow)
+
+// ─── ATR ───────────────────────────────────────────────────────────────────────
+atr = ta.atr(atrLen)
+
+// ─── TREND ─────────────────────────────────────────────────────────────────────
+emaFastVal = ta.ema(close, emaFast)
+emaSlowVal = ta.ema(close, emaSlow)
+bullTrend = emaFastVal > emaSlowVal
+bearTrend = emaFastVal < emaSlowVal
+
+// HTF bias: compare price to HTF EMA on same 4H bar
+priceHTF = request.security(syminfo.root, htfRes, close, lookahead=barmerge.lookahead_on)
+emaHTFNow = ta.ema(priceHTF, emaHTF)
+htfBullBias = close > emaHTFNow
+htfBearBias = close < emaHTFNow
+
+trendAgree = (bullTrend and htfBullBias) or (bearTrend and htfBearBias)
+
+// ─── SESSION FILTER ───────────────────────────────────────────────────────────
+inEUSession = hour >= 8 and hour <= 16
+inUSSession = hour >= 13 and hour <= 17
+allowTrade  = not sessionFilter or (inEUSession or inUSSession)
+
+// ─── VOLUME ───────────────────────────────────────────────────────────────────
+volMA      = ta.sma(volume, 20)
+volConfirm = not useVolume or (volume > volMA * volMulti)
+
+// ─── FVG DETECTION ────────────────────────────────────────────────────────────
+// FVG = 3-bar imbalance: candle i-2 high < candle i low, candle i-1 low > candle i+1 high
+// We detect on 1H within the 4H candle — check if current 4H bar contains FVG
+
+float fvgBullSize = na
+float fvgBearSize = na
+bool  fvgBull = false
+bool  fvgBear = false
+
+// Check last 3 1H candles within this 4H bar
+high1 = request.security(syminfo.root, "60", high[1], lookahead=barmerge.lookahead_on)
+low1  = request.security(syminfo.root, "60", low[1],  lookahead=barmerge.lookahead_on)
+high2 = request.security(syminfo.root, "60", high[2], lookahead=barmerge.lookahead_on)
+low2  = request.security(syminfo.root, "60", low[2],  lookahead=barmerge.lookahead_on)
+close2= request.security(syminfo.root, "60", close[2],lookahead=barmerge.lookahead_on)
+
+if barstate.isconfirmed
+    bullFVG = low1 > high2  // bullish FVG: candle 2 low > candle 1 high
+    bearFVG = high1 < low2  // bearish FVG: candle 2 high < candle 1 low
+
+    fvgSize = bullFVG ? low1 - high2 : (bearFVG ? low2 - high1 : 0)
+    fvgMin  = atr * fvgThreshold
+
+    if bullFVG and fvgSize >= fvgMin and trendAgree and not bullTrend
+        fvgBull := true
+        fvgBullSize := fvgSize
+    if bearFVG and fvgSize >= fvgMin and trendAgree and not bearTrend
+        fvgBear := true
+        fvgBearSize := fvgSize
+
+// ─── ENTRY ───────────────────────────────────────────────────────────────────
+bool longSignal  = fvgBull and trendAgree and allowTrade and volConfirm
+bool shortSignal = fvgBear and trendAgree and allowTrade and volConfirm
+
+float entryPrice = close
+float stopDist  = atr * atrMulti
+float stopPrice = na
+float tpPrice   = na
+
+if longSignal and strategy.position_size == 0
+    stopPrice := entryPrice - stopDist
+    tpPrice   := entryPrice + stopDist * rrTarget
+    strategy.entry("Long", strategy.long, comment="Long")
+    strategy.exit("Long Exit", "Long",
+        stop=stopPrice,
+        limit=tpPrice,
+        trail_points=stopDist / syminfo.mintick * trActivate,
+        trail_offset=stopDist / syminfo.mintick * trActivate / 2,
+        comment="SL/TS/TP")
+
+if shortSignal and strategy.position_size == 0
+    stopPrice := entryPrice + stopDist
+    tpPrice   := entryPrice - stopDist * rrTarget
+    strategy.entry("Short", strategy.short, comment="Short")
+    strategy.exit("Short Exit", "Short",
+        stop=stopPrice,
+        limit=tpPrice,
+        trail_points=stopDist / syminfo.mintick * trActivate,
+        trail_offset=stopDist / syminfo.mintick * trActivate / 2,
+        comment="SL/TS/TP")
+
+// ─── PLOTTING ───────────────────────────────────────────────────────────────
+plot(emaFastVal, "EMA Fast", color=color.new(color.lime, 0), linewidth=2)
+plot(emaSlowVal, "EMA Slow", color=color.new(color.red, 0), linewidth=2)
+plot(emaHTFNow, "HTF EMA",  color=color.new(color.blue, 50), linewidth=1)
+
+// FVG zones
+plotshape(fvgBull, title="Bull FVG", location=location.belowbar, shape=shape.triangleup, color=color.new(color.lime, 0), size=size.small)
+plotshape(fvgBear, title="Bear FVG", location=location.abovebar, shape=shape.triangledown, color=color.new(color.red, 0), size=size.small)
+
+// Entry markers
+plotshape(longSignal, title="Long Signal", location=location.belowbar, shape=shape.circle, color=color.new(color.green, 0), size=size.tiny)
+plotshape(shortSignal, title="Short Signal", location=location.abovebar, shape=shape.circle, color=color.new(color.orange, 0), size=size.tiny)
+
+// ─── ALERTS ────────────────────────────────────────────────────────────────────
+alertcondition(longSignal,  "Long Entry",  "BTC 4H Long Entry — FVG bullish, trend aligned")
+alertcondition(shortSignal, "Short Entry", "BTC 4H Short Entry — FVG bearish, trend aligned")
+alertcondition(close < priceHTF * 0.97, "HTF Trend Reversal", "BTC 4H — HTF EMA trend shift")
