@@ -56,6 +56,8 @@ Paths resolve through `edge_config.py`, relative to the repo by default. Overrid
 .venv/bin/python -m pytest -q
 ```
 
+Tests and a lint check run automatically on every push (GitHub Actions, Python 3.10 and 3.12).
+
 ## Roadmap
 
 The Edge Ledger work (experiment registry, duplicate grouping, Deflated Sharpe, probability of backtest overfitting, walk-forward validation and verdict reports) is planned in [ROADMAP.md](ROADMAP.md).

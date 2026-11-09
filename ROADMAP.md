@@ -7,7 +7,7 @@ Planned independent development: about 200 hours. Each milestone ships with test
 - [x] `pyproject.toml` with runtime and dev dependencies
 - [ ] Package layout (`edge_ledger/`) and CLI entry point
 - [ ] Test suite with pytest and sample public market data (started: config tests)
-- [ ] Continuous integration (lint + tests on Python 3.10 and 3.12)
+- [x] Continuous integration (lint + tests on Python 3.10 and 3.12)
 
 ## 2. Experiment registry (~30h)
 - [ ] Record every backtest run: strategy ID, parameters, symbol, timeframe, date range, cost assumptions, code version
