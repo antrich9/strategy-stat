@@ -1,0 +1,23 @@
+# Secrets and local config
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+tv_mcp_config.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local logs and caches
+*.log
+pine_translation_log.json
+.cache/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
