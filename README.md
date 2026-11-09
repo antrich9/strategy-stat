@@ -36,7 +36,26 @@ python3 -m venv .venv && .venv/bin/pip install pandas numpy
 .venv/bin/python batch_backtest.py          # parallel batch runs
 ```
 
-Chart backtests need TradingView Desktop running with the MCP server. Some scripts still use absolute paths from my machine; making paths configurable is the first roadmap item.
+Chart backtests need TradingView Desktop running with the MCP server.
+
+### Configuration
+
+Paths resolve through `edge_config.py`, relative to the repo by default. Override with environment variables:
+
+| Variable | Default |
+| --- | --- |
+| `EDGE_LEDGER_HOME` | repo root |
+| `EDGE_LEDGER_OUTPUT` | `<home>/output` |
+| `EDGE_LEDGER_CATALOG` | `<output>/final_research_catalog.csv` |
+| `EDGE_LEDGER_CACHE` | `<system temp>/bars_cache.pkl` |
+| `EDGE_LEDGER_PYTHON` | `<home>/.venv` interpreter, else the current one |
+
+### Tests
+
+```bash
+.venv/bin/pip install pytest
+.venv/bin/python -m pytest -q
+```
 
 ## Roadmap
 

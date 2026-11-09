@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
+import os
+import sys
+
 import pandas as pd
 import numpy as np
 
-IN_FILE  = '/home/guiuser/.openclaw/workspace/output/final_research_catalog_with_backtests.csv'
-OUT_FILE = '/home/guiuser/.openclaw/workspace/output/ranked_strategies_by_pair_timeframe.csv'
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import edge_config
+
+IN_FILE  = str(edge_config.OUTPUT_DIR / 'final_research_catalog_with_backtests.csv')
+OUT_FILE = str(edge_config.OUTPUT_DIR / 'ranked_strategies_by_pair_timeframe.csv')
 
 ALL_SYMBOLS = ['FX:GER40', 'FX:US30', 'FX:GBPUSD', 'FX:XAUUSD', 'FX:GER30', 'BINANCE:BTCUSDT']
 MIN_TRADES = {'15': 300, '60': 250, '240': 150, 'D': 60}

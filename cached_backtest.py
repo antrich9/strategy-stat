@@ -11,11 +11,13 @@ Expected: 1,277 strategies in ~2-3 hours total (vs 25+ hours with API calls per 
 import os, sys, json, time, subprocess, csv, pickle, signal
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-SCRIPT_DIR = '/home/guiuser/.openclaw/workspace'
-TRANSLATED_DIR = f'{SCRIPT_DIR}/pine_translated'
-CSV_FILE = f'{SCRIPT_DIR}/strategy_stats.csv'
-CACHE_FILE = '/tmp/bars_cache.pkl'
-VENV_PY = f'{SCRIPT_DIR}/.venv/bin/python'
+import edge_config
+
+SCRIPT_DIR = str(edge_config.HOME)
+TRANSLATED_DIR = str(edge_config.TRANSLATED_DIR)
+CSV_FILE = str(edge_config.STATS_CSV)
+CACHE_FILE = str(edge_config.CACHE_FILE)
+VENV_PY = edge_config.venv_python()
 MAX_WORKERS = int(os.environ.get('MAX_WORKERS', 8))
 TIMEOUT = int(os.environ.get('TIMEOUT', 120))
 

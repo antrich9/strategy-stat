@@ -12,10 +12,12 @@ import os, sys, json, time, subprocess, csv, signal
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import defaultdict
 
-SCRIPT_DIR = '/home/guiuser/.openclaw/workspace'
-TRANSLATED_DIR = f'{SCRIPT_DIR}/pine_translated'
-CSV_FILE = f'{SCRIPT_DIR}/strategy_stats.csv'
-VENV_PY = f'{SCRIPT_DIR}/.venv/bin/python'
+import edge_config
+
+SCRIPT_DIR = str(edge_config.HOME)
+TRANSLATED_DIR = str(edge_config.TRANSLATED_DIR)
+CSV_FILE = str(edge_config.STATS_CSV)
+VENV_PY = edge_config.venv_python()
 
 TIMEOUT = int(os.environ.get('TIMEOUT', 120))  # 2 min per strategy (more generous)
 MAX_WORKERS = int(os.environ.get('MAX_WORKERS', 8))

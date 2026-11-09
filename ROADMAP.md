@@ -3,7 +3,7 @@
 Planned independent development: about 200 hours. Each milestone ships with tests and documentation.
 
 ## 1. Foundations (~20h)
-- [ ] Make all paths configurable (no absolute machine paths); single config file
+- [x] Make all paths configurable (no absolute machine paths); single config file (`edge_config.py`)
 - [ ] Package layout (`edge_ledger/`), CLI entry point, `pyproject.toml`
 - [ ] Test suite with pytest and sample public market data
 - [ ] Continuous integration (lint + tests)

@@ -3,12 +3,15 @@
 BTCUSDT 4H Shortlist Builder — modular version
 Run: .venv/bin/python merge_and_shortlist.py
 """
-import os, re, pandas as pd
+import os, re, sys, pandas as pd
 
-WORKSPACE = '/home/guiuser/.openclaw/workspace'
-CATALOG_PATH = '/home/guiuser/.openclaw/workspace-secondary/final_research_catalog.csv'
-STATS_PATH   = f'{WORKSPACE}/strategy_stats.csv'
-OUT_DIR      = f'{WORKSPACE}/output'
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import edge_config
+
+WORKSPACE    = str(edge_config.HOME)
+CATALOG_PATH = str(edge_config.CATALOG_CSV)
+STATS_PATH   = str(edge_config.STATS_CSV)
+OUT_DIR      = str(edge_config.OUTPUT_DIR)
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # ── Config ──────────────────────────────────────────────────────────────────
