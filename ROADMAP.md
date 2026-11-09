@@ -4,9 +4,10 @@ Planned independent development: about 200 hours. Each milestone ships with test
 
 ## 1. Foundations (~20h)
 - [x] Make all paths configurable (no absolute machine paths); single config file (`edge_config.py`)
-- [ ] Package layout (`edge_ledger/`), CLI entry point, `pyproject.toml`
-- [ ] Test suite with pytest and sample public market data
-- [ ] Continuous integration (lint + tests)
+- [x] `pyproject.toml` with runtime and dev dependencies
+- [ ] Package layout (`edge_ledger/`) and CLI entry point
+- [ ] Test suite with pytest and sample public market data (started: config tests)
+- [ ] Continuous integration (lint + tests on Python 3.10 and 3.12)
 
 ## 2. Experiment registry (~30h)
 - [ ] Record every backtest run: strategy ID, parameters, symbol, timeframe, date range, cost assumptions, code version

@@ -30,7 +30,7 @@ Python 3 (pandas, NumPy), TradingView Desktop with an MCP bridge for chart backt
 ## How to run (current state)
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install pandas numpy
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/python tv_pipeline.py classify    # find real strategies among the scripts
 .venv/bin/python tv_pipeline.py backtest    # standardised backtests
 .venv/bin/python batch_backtest.py          # parallel batch runs
@@ -53,7 +53,6 @@ Paths resolve through `edge_config.py`, relative to the repo by default. Overrid
 ### Tests
 
 ```bash
-.venv/bin/pip install pytest
 .venv/bin/python -m pytest -q
 ```
 
